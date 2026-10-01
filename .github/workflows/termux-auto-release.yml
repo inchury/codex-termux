@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/termux-auto-release.yml"
+      - ".github/workflows/termux-auto-build.yml"
   schedule:
     # GitHub cannot subscribe directly to another repository's release event,
     # so poll the official stable release once per hour.
@@ -116,11 +117,42 @@ jobs:
           # --3way uses the old official base as the merge base. If a Termux
           # compatibility change no longer applies cleanly, stop instead of
           # publishing a guessed binary.
+          set +e
           git apply --3way --index "${RUNNER_TEMP}/termux-release-delta.patch"
+          apply_rc=$?
+          set -e
+
+          if [ "${apply_rc}" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -z "${conflicts}" ]; then
+              echo "Termux delta failed without merge conflicts." >&2
+              exit "${apply_rc}"
+            fi
+
+            unexpected=0
+            while IFS= read -r path; do
+              case "${path}" in
+                CHANGELOG.md|codex-rs/cli/tests/app_server_daemon.rs|codex-rs/core/src/context/world_state/persistent_mode.rs|codex-rs/core/src/context/world_state/persistent_mode_tests.rs|codex-rs/core/src/guardian/review.rs|codex-rs/core/src/guardian/review_session_tests.rs|codex-rs/core/src/session/step_activation.rs|codex-rs/core/src/session/world_state.rs)
+                  echo "Keeping upstream version for known non-Termux conflict: ${path}"
+                  git checkout --ours -- "${path}"
+                  git add "${path}"
+                  ;;
+                *)
+                  echo "Unexpected Termux delta conflict: ${path}" >&2
+                  unexpected=1
+                  ;;
+              esac
+            done <<< "${conflicts}"
+
+            if [ "${unexpected}" -ne 0 ] || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "Termux delta requires manual review; refusing to publish." >&2
+              exit 1
+            fi
+          fi
 
           # Keep this fork's automation files rather than the source fork's
           # release workflow copies carried by the compatibility patch.
-          git checkout origin/main --             .github/workflows/termux-npm-build-publish.yml             .github/workflows/termux-auto-release.yml
+          git checkout origin/main -- .github/workflows/termux-npm-build-publish.yml .github/workflows/termux-auto-build.yml .github/workflows/termux-auto-release.yml
 
           VERSION="${version}" UPSTREAM_TAG="${upstream_tag}" node <<'NODE'
           const fs = require("node:fs");
@@ -138,7 +170,23 @@ jobs:
           }
           fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
           NODE
-          git add npm-package/package.json             .github/workflows/termux-npm-build-publish.yml             .github/workflows/termux-auto-release.yml
+
+          mkdir -p .release
+          cat > ".release/v${version}-termux.1.md" <<EOF
+          # [${version}-termux.1]
+
+          Termux / Android ARM64 build based on OpenAI Codex \`${upstream_tag}\`.
+          EOF
+
+          changelog_tmp="$(mktemp)"
+          {
+            printf '# [%s-termux.1]\n\n' "${version}"
+            printf -- '- Automated Termux / Android ARM64 port of OpenAI Codex \`%s\`.\n\n' "${upstream_tag}"
+            cat CHANGELOG.md
+          } > "${changelog_tmp}"
+          mv "${changelog_tmp}" CHANGELOG.md
+
+          git add npm-package/package.json CHANGELOG.md ".release/v${version}-termux.1.md" .github/workflows/termux-npm-build-publish.yml .github/workflows/termux-auto-build.yml .github/workflows/termux-auto-release.yml
 
           # The Codex build must have an audited Android rusty_v8 prebuild.
           # Do not silently compile against an unpinned or non-sandbox V8.
@@ -196,7 +244,7 @@ jobs:
     if: ${{ needs.prepare.outputs.should_build == 'true' }}
     permissions:
       contents: write
-    uses: ./.github/workflows/termux-npm-build-publish.yml
+    uses: ./.github/workflows/termux-auto-build.yml
     with:
       source_ref: ${{ needs.prepare.outputs.candidate_branch }}
       publish_release: true
