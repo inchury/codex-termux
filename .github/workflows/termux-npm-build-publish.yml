@@ -6,10 +6,6 @@
 name: termux-npm-build-publish
 
 on:
-  push:
-    branches:
-      - main
-      - lts
   workflow_dispatch:
     inputs:
       source_ref:
