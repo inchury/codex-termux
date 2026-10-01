@@ -1,6 +1,11 @@
 name: termux-auto-release
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/termux-auto-release.yml"
   schedule:
     # GitHub cannot subscribe directly to another repository's release event,
     # so poll the official stable release once per hour.
