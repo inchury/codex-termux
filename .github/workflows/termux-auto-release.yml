@@ -152,7 +152,11 @@ jobs:
 
           # Keep this fork's automation files rather than the source fork's
           # release workflow copies carried by the compatibility patch.
-          git checkout origin/main -- .github/workflows/termux-npm-build-publish.yml .github/workflows/termux-auto-build.yml .github/workflows/termux-auto-release.yml
+          # Remove all upstream workflow files before restoring this fork's
+          # automation. Otherwise the GitHub token cannot push the candidate
+          # branch when the upstream delta adds or modifies workflow files.
+          git rm -r -f --ignore-unmatch .github/workflows
+          git checkout origin/main -- .github/workflows
 
           VERSION="${version}" UPSTREAM_TAG="${upstream_tag}" node <<'NODE'
           const fs = require("node:fs");
@@ -186,7 +190,7 @@ jobs:
           } > "${changelog_tmp}"
           mv "${changelog_tmp}" CHANGELOG.md
 
-          git add npm-package/package.json CHANGELOG.md ".release/v${version}-termux.1.md" .github/workflows/termux-npm-build-publish.yml .github/workflows/termux-auto-build.yml .github/workflows/termux-auto-release.yml
+          git add npm-package/package.json CHANGELOG.md ".release/v${version}-termux.1.md" .github/workflows
 
           # The Codex build must have an audited Android rusty_v8 prebuild.
           # Do not silently compile against an unpinned or non-sandbox V8.
