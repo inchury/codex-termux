@@ -1256,6 +1256,26 @@ async fn model_safety_rejects_fallback_metadata() {
     }
 }
 
+#[tokio::test]
+async fn model_safety_rejects_oversized_parent_fallback_messages() {
+    let (_, turn) = make_session_and_context().await;
+    let (admitted, mut destination) = safety_models();
+    // codex-vl: the parent-fallback policy source stays fail-closed — an
+    // oversized node REPL policy on any compared model refuses the switch
+    // before the Guardian policy comparison happens.
+    let oversized = "x".repeat(8 * 1024 + 1);
+    parent_review_messages(&mut destination).node_repl_policy = Some(oversized);
+    for current in [&admitted, &destination] {
+        let error =
+            check_legacy_model_safety(&admitted, current, &destination, &turn.config, &turn.config)
+                .expect_err("oversized parent-fallback messages must refuse the switch");
+        assert!(
+            error.contains("field `node_repl_policy` is 8193 bytes; maximum is 8192 bytes"),
+            "unexpected error: {error}"
+        );
+    }
+}
+
 #[test_case(None, None, false; "both catalog policies")]
 #[test_case(Some("admitted policy"), None, false; "live config unmasks catalog")]
 #[test_case(None, Some("live policy"), false; "admitted config unmasks catalog")]

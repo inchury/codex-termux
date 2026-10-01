@@ -950,6 +950,10 @@ fn installation_check(show_details: bool) -> DoctorCheck {
     if doctor_managed_by_npm(current_exe.as_deref()) {
         details
             .push("npm update target: not inspected (PATH helpers are not executed)".to_string());
+        details.push(
+            "update channel: npm install -g @mmmbuto/codex-cli-termux@latest (fork release)"
+                .to_string(),
+        );
         if env::var_os("CODEX_MANAGED_PACKAGE_ROOT").is_none() {
             status = status.max(CheckStatus::Warning);
             summary = "npm-managed launch is missing package-root provenance".to_string();

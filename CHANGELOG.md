@@ -1,3 +1,7 @@
+# [0.159.3-termux.1]
+
+- Automated Termux / Android ARM64 port of OpenAI Codex \`rust-v0.159.3\`.
+
 The changelog can be found on the [releases page](https://github.com/openai/codex/releases).
 
 ## Unreleased

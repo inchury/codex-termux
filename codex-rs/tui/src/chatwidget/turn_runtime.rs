@@ -77,6 +77,11 @@ impl ChatWidget {
     pub(super) fn on_task_started(&mut self) {
         self.bottom_pane.dismiss_composer_sparkle();
         self.clear_context_compaction();
+        if self.input_queue.user_turn_pending_start && !self.turn_lifecycle.agent_turn_running {
+            tracing::warn!(
+                "clearing an orphan pending user-turn start at a terminal turn: no turn was running"
+            );
+        }
         self.input_queue.user_turn_pending_start = false;
         self.reset_safety_buffering_for_turn_start();
         self.turn_lifecycle.start(Instant::now());
@@ -170,6 +175,11 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.clear_context_compaction();
         self.status_state.pending_status_indicator_restore = false;
+        if self.input_queue.user_turn_pending_start && !self.turn_lifecycle.agent_turn_running {
+            tracing::warn!(
+                "clearing an orphan pending user-turn start at a terminal turn: no turn was running"
+            );
+        }
         self.status_state.reasoning_item_id = None;
         self.status_state.reasoning_resume_turn_id = None;
         self.reasoning_header = None;
@@ -334,6 +344,11 @@ impl ChatWidget {
         // event arrived before cancellation.
         self.clear_active_hook_cell();
         // Reset running state and clear streaming buffers.
+        if self.input_queue.user_turn_pending_start && !self.turn_lifecycle.agent_turn_running {
+            tracing::warn!(
+                "clearing an orphan pending user-turn start at a terminal turn: no turn was running"
+            );
+        }
         self.input_queue.user_turn_pending_start = false;
         self.clear_guardian_review_status();
         self.turn_lifecycle.finish();

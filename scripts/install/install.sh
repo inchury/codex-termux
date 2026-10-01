@@ -4,32 +4,14 @@ set -eu
 
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
-DAEMON_ONLY="${CODEX_INSTALL_DAEMON_ONLY:-0}"
-DEFAULT_PREFER_RELEASES_OPENAI_COM="true"
-PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
-RELEASES_BASE_URL="https://releases.openai.com/codex"
-RELEASES_CONNECT_TIMEOUT=10
-RELEASES_METADATA_TIMEOUT=30
-RELEASES_ASSET_TIMEOUT=300
-release_source="github"
 
 BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/codex"
 CODE_MODE_HOST_BIN_PATH="$BIN_DIR/codex-code-mode-host"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
-if [ "$DAEMON_ONLY" = "1" ]; then
-  STANDALONE_ROOT="$CODEX_HOME_DIR/packages/app-server-daemon"
-fi
 RELEASES_DIR="$STANDALONE_ROOT/releases"
 CURRENT_LINK="$STANDALONE_ROOT/current"
-if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ]; then
-  if [ "$DAEMON_ONLY" != "1" ]; then
-    echo "Deferred selection requires a daemon-only installation." >&2
-    exit 1
-  fi
-  CURRENT_LINK="$STANDALONE_ROOT/.migration-current"
-fi
 AUTO_UPDATE_VERSION="$STANDALONE_ROOT/auto-update-version"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
@@ -74,9 +56,9 @@ validate_version() {
     return
   fi
 
-  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
-    return 1
+  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$'; then
+    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N]|-beta[.N]]." >&2
+    exit 1
   fi
 }
 
@@ -98,8 +80,6 @@ Usage: install.sh [--release VERSION]
 Environment:
   CODEX_RELEASE          Version to install; overridden by --release.
   CODEX_NON_INTERACTIVE  Set to 1, true, or yes to skip prompts.
-  CODEX_INSTALLER_USE_RELEASES_OPENAI_COM
-                         Set to 0, false, or no to use GitHub Releases.
 EOF
         exit 0
         ;;
@@ -117,26 +97,12 @@ download_file() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_ASSET_TIMEOUT" "$url" -o "$output"
-        ;;
-      *)
-        curl -fsSL "$url" -o "$output"
-        ;;
-    esac
+    curl -fsSL "$url" -o "$output"
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        wget -q -t 1 -T "$RELEASES_ASSET_TIMEOUT" -O "$output" "$url"
-        ;;
-      *)
-        wget -q -O "$output" "$url"
-        ;;
-    esac
+    wget -q -O "$output" "$url"
     return
   fi
 
@@ -148,64 +114,17 @@ download_text() {
   url="$1"
 
   if command -v curl >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        curl -fsSL --connect-timeout "$RELEASES_CONNECT_TIMEOUT" --max-time "$RELEASES_METADATA_TIMEOUT" "$url"
-        ;;
-      *)
-        curl -fsSL "$url"
-        ;;
-    esac
+    curl -fsSL "$url"
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    case "$url" in
-      "$RELEASES_BASE_URL"/*)
-        wget -q -t 1 -T "$RELEASES_METADATA_TIMEOUT" -O - "$url"
-        ;;
-      *)
-        wget -q -O - "$url"
-        ;;
-    esac
+    wget -q -O - "$url"
     return
   fi
 
   echo "curl or wget is required to install Codex." >&2
   exit 1
-}
-
-download_file_with_fallback() {
-  primary_url="$1"
-  fallback_url="$2"
-  output="$3"
-  expected_digest="$4"
-  fallback_asset="$5"
-  required_manifest_asset="${6:-}"
-
-  if download_file "$primary_url" "$output" &&
-    verify_archive_digest "$output" "$expected_digest" &&
-    { [ -z "$required_manifest_asset" ] || package_archive_digest "$required_manifest_asset" "$output" >/dev/null; }; then
-    return
-  fi
-
-  if [ -z "$fallback_url" ]; then
-    return 1
-  fi
-
-  warn "Could not download or verify $primary_url; retrying from GitHub Releases."
-  download_file "$fallback_url" "$output"
-  if verify_archive_digest "$output" "$expected_digest" &&
-    { [ -z "$required_manifest_asset" ] || package_archive_digest "$required_manifest_asset" "$output" >/dev/null; }; then
-    return
-  fi
-
-  resolve_release_from_github "$resolved_version"
-  fallback_digest="$(release_asset_digest "$fallback_asset")"
-  verify_archive_digest "$output" "$fallback_digest"
-  if [ -n "$required_manifest_asset" ]; then
-    package_archive_digest "$required_manifest_asset" "$output" >/dev/null
-  fi
 }
 
 parse_release_metadata() {
@@ -319,49 +238,22 @@ release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
 
-  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
-}
-
-releases_url_for_asset() {
-  asset="$1"
-  resolved_version="$2"
-
-  printf '%s/releases/%s/%s\n' "$RELEASES_BASE_URL" "$resolved_version" "$asset"
+  printf 'https://github.com/DioNanos/codex-termux/releases/download/v%s/%s\n' "$resolved_version" "$asset"
 }
 
 release_metadata_url() {
   resolved_version="$1"
 
-  printf 'https://api.github.com/repos/openai/codex/releases/tags/rust-v%s\n' "$resolved_version"
+  printf 'https://api.github.com/repos/DioNanos/codex-termux/releases/tags/v%s\n' "$resolved_version"
 }
 
-parse_downloaded_release_metadata() {
-  requested_release="$1"
-  source_name="$2"
-  if ! release_metadata="$(printf '%s\n' "$release_json" | parse_release_metadata)"; then
-    echo "Could not parse $source_name release metadata for Codex $requested_release." >&2
-    return 1
-  fi
-}
+resolve_release() {
+  normalized_version="$(normalize_version "$RELEASE")"
+  validate_version "$normalized_version"
 
-resolve_metadata_version() {
-  release_tag="$(printf '%s\n' "$release_metadata" | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"
-  case "$release_tag" in
-    rust-v*) metadata_version="${release_tag#rust-v}" ;;
-    *) metadata_version="" ;;
-  esac
-  if [ -z "$metadata_version" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
-    return 1
-  fi
-  validate_version "$metadata_version"
-}
-
-resolve_release_from_github() {
-  normalized_version="$1"
   if [ "$normalized_version" = "latest" ]; then
     requested_release="latest"
-    metadata_url="https://api.github.com/repos/openai/codex/releases/latest"
+    metadata_url="https://api.github.com/repos/DioNanos/codex-termux/releases/latest"
   else
     resolved_version="$normalized_version"
     requested_release="$resolved_version"
@@ -373,61 +265,24 @@ resolve_release_from_github() {
     exit 1
   fi
 
-  parse_downloaded_release_metadata "$requested_release" "GitHub"
+  if ! release_metadata="$(printf '%s\n' "$release_json" | parse_release_metadata)"; then
+    echo "Could not parse GitHub release metadata for Codex $requested_release." >&2
+    exit 1
+  fi
 
   if [ "$normalized_version" = "latest" ]; then
-    resolve_metadata_version
-    resolved_version="$metadata_version"
+    release_tag="$(printf '%s\n' "$release_metadata" | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"
+    case "$release_tag" in
+      rust-v*) resolved_version="${release_tag#rust-v}" ;;
+      v*) resolved_version="${release_tag#v}" ;;
+      *) resolved_version="" ;;
+    esac
+    if [ -z "$resolved_version" ]; then
+      echo "Failed to resolve the latest Codex release version." >&2
+      exit 1
+    fi
+    validate_version "$resolved_version"
   fi
-
-  release_source="github"
-}
-
-resolve_release_from_releases() {
-  normalized_version="$1"
-
-  if [ "$normalized_version" = "latest" ]; then
-    requested_release="latest"
-    metadata_url="$RELEASES_BASE_URL/channels/latest"
-  else
-    requested_release="$normalized_version"
-    metadata_url="$RELEASES_BASE_URL/releases/$normalized_version/release.json"
-  fi
-
-  if ! release_json="$(download_text "$metadata_url")"; then
-    return 1
-  fi
-
-  if ! parse_downloaded_release_metadata "$requested_release" "releases.openai.com"; then
-    return 1
-  fi
-  if ! resolve_metadata_version; then
-    return 1
-  fi
-  if [ "$normalized_version" != "latest" ] && [ "$metadata_version" != "$normalized_version" ]; then
-    echo "Release metadata version did not match requested Codex version $normalized_version." >&2
-    return 1
-  fi
-  resolved_version="$metadata_version"
-  release_source="releases.openai.com"
-}
-
-resolve_release() {
-  normalized_version="$(normalize_version "$RELEASE")"
-  validate_version "$normalized_version"
-
-  case "$PREFER_RELEASES_OPENAI_COM" in
-    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss])
-      if resolve_release_from_releases "$normalized_version" &&
-        select_release_assets; then
-        return
-      fi
-      warn "releases.openai.com is unavailable; falling back to GitHub Releases."
-      ;;
-  esac
-
-  resolve_release_from_github "$normalized_version"
-  select_release_assets
 }
 
 release_asset_digest_or_empty() {
@@ -442,11 +297,7 @@ release_asset_digest_or_empty() {
 
   case "$digest" in
     sha256:????????????????????????????????????????????????????????????????)
-      digest="${digest#sha256:}"
-      case "$digest" in
-        *[!0-9a-fA-F]*) return 1 ;;
-      esac
-      printf '%s\n' "$digest"
+      printf '%s\n' "${digest#sha256:}"
       ;;
     *)
       return 1
@@ -472,39 +323,6 @@ release_asset_digest() {
   printf '%s\n' "$digest"
 }
 
-select_release_assets() {
-  package_asset="codex-package-$vendor_target.tar.gz"
-  checksum_asset="codex-package_SHA256SUMS"
-  download_fallback_url=""
-  checksum_fallback_url=""
-
-  if release_asset_exists "$package_asset" &&
-    release_asset_exists "$checksum_asset"; then
-    install_layout="package"
-    asset="$package_asset"
-  elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz"; then
-    install_layout="legacy-platform-npm"
-    asset="codex-npm-$npm_tag-$resolved_version.tgz"
-  else
-    echo "Could not find Codex package or platform npm release assets for Codex $resolved_version." >&2
-    return 1
-  fi
-
-  if [ "$release_source" = "releases.openai.com" ]; then
-    download_url="$(releases_url_for_asset "$asset" "$resolved_version")"
-    download_fallback_url="$(release_url_for_asset "$asset" "$resolved_version")"
-    if [ "$install_layout" = "package" ]; then
-      checksum_url="$(releases_url_for_asset "$checksum_asset" "$resolved_version")"
-      checksum_fallback_url="$(release_url_for_asset "$checksum_asset" "$resolved_version")"
-    fi
-  else
-    download_url="$(release_url_for_asset "$asset" "$resolved_version")"
-    if [ "$install_layout" = "package" ]; then
-      checksum_url="$(release_url_for_asset "$checksum_asset" "$resolved_version")"
-    fi
-  fi
-}
-
 package_archive_digest() {
   asset="$1"
   manifest_path="$2"
@@ -524,7 +342,7 @@ package_archive_digest() {
 
   if [ -z "$digest" ]; then
     echo "Could not find SHA-256 digest for $asset in codex-package_SHA256SUMS." >&2
-    return 1
+    exit 1
   fi
 
   printf '%s\n' "$digest"
@@ -561,7 +379,7 @@ verify_archive_digest() {
     echo "Downloaded Codex archive checksum did not match expected digest." >&2
     echo "expected: $expected_digest" >&2
     echo "actual:   $actual_digest" >&2
-    return 1
+    exit 1
   fi
 }
 
@@ -753,7 +571,7 @@ cleanup_stale_install_artifacts() {
   find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -name '.staging.*' -exec rm -rf {} +
   find "$STANDALONE_ROOT" -mindepth 1 -maxdepth 1 -name '.current.*' -exec rm -f {} +
 
-  if [ "$DAEMON_ONLY" != "1" ] && [ -d "$BIN_DIR" ]; then
+  if [ -d "$BIN_DIR" ]; then
     find "$BIN_DIR" -mindepth 1 -maxdepth 1 -name '.codex.*' -exec rm -f {} +
   fi
 }
@@ -927,10 +745,10 @@ handle_conflicting_install() {
       uninstall_cmd="brew uninstall --cask codex"
       ;;
     bun)
-      uninstall_cmd="bun remove -g @openai/codex"
+      uninstall_cmd="bun remove -g @mmmbuto/codex-cli-termux"
       ;;
     *)
-      uninstall_cmd="npm uninstall -g @openai/codex"
+      uninstall_cmd="npm uninstall -g @mmmbuto/codex-cli-termux"
       ;;
   esac
 
@@ -1025,13 +843,9 @@ release_dir_is_complete() {
   esac
 
   case "$layout:$expected_target" in
-    package:*linux* | legacy-platform-npm:*linux*)
-      [ -x "$release_dir/codex-resources/bwrap" ] || return 1
-      ;;
+    package:*linux* | legacy-platform-npm:*linux*) [ -x "$release_dir/codex-resources/bwrap" ] ;;
+    *) true ;;
   esac
-
-  installed_version="$(version_from_binary "$release_dir/bin/codex" || version_from_binary "$release_dir/codex" || true)"
-  [ "$installed_version" = "$expected_version" ]
 }
 
 update_current_link() {
@@ -1137,6 +951,21 @@ else
 fi
 
 resolve_release
+package_asset="codex-package-$vendor_target.tar.gz"
+checksum_asset="codex-package_SHA256SUMS"
+if release_asset_exists "$package_asset" &&
+  release_asset_exists "$checksum_asset"; then
+  install_layout="package"
+  asset="$package_asset"
+elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz"; then
+  install_layout="legacy-platform-npm"
+  asset="codex-npm-$npm_tag-$resolved_version.tgz"
+else
+  echo "Could not find Codex package or platform npm release assets for Codex $resolved_version." >&2
+  exit 1
+fi
+download_url="$(release_url_for_asset "$asset" "$resolved_version")"
+checksum_url="$(release_url_for_asset "$checksum_asset" "$resolved_version")"
 release_name="$resolved_version-$vendor_target"
 release_dir="$RELEASES_DIR/$release_name"
 current_version="$(current_installed_version)"
@@ -1151,9 +980,7 @@ fi
 step "Detected platform: $platform_label"
 step "Resolved version: $resolved_version"
 
-if [ "$DAEMON_ONLY" != "1" ]; then
-  detect_conflicting_install
-fi
+detect_conflicting_install
 
 tmp_dir="$(mktemp -d)"
 cleanup() {
@@ -1167,17 +994,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 acquire_install_lock
-if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ] &&
-  { [ -e "$STANDALONE_ROOT/current" ] || [ -L "$STANDALONE_ROOT/current" ]; }; then
-  echo "A dedicated daemon is already selected; retry the update." >&2
-  exit 1
-fi
 updater_record="$CODEX_HOME_DIR/app-server-daemon/app-server-updater.pid"
-if [ "$DAEMON_ONLY" = "1" ]; then
-  updater_record="$CODEX_HOME_DIR/app-server-daemon/daemon-updater.pid"
-fi
 old_updater_parent="false"
-if [ "${CODEX_INSTALL_IF_LATEST:-}" != "1" ] && [ "${CODEX_INSTALL_IF_CURRENT:-}" != "1" ] && [ -f "$updater_record" ]; then
+if [ "${CODEX_INSTALL_IF_LATEST:-}" != "1" ] && [ -f "$updater_record" ]; then
   updater_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$updater_record" | head -n 1)"
   recorded_start="$(sed -n 's/.*"processStartTime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$updater_record" | head -n 1)"
   if [ -r "/proc/$$/stat" ]; then
@@ -1201,7 +1020,7 @@ if [ "${CODEX_INSTALL_IF_LATEST:-}" != "1" ] && [ "${CODEX_INSTALL_IF_CURRENT:-}
     exit 0
   fi
 fi
-if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "${CODEX_INSTALL_IF_CURRENT:-}" = "1" ] || [ "$old_updater_parent" = "true" ]; then
+if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "$old_updater_parent" = "true" ]; then
   guarded_release="${CODEX_UPDATE_FROM_RELEASE:-}"
   if [ "$old_updater_parent" = "true" ]; then
     guarded_release="$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)"
@@ -1209,17 +1028,8 @@ if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "${CODEX_INSTALL_IF_CURRENT:-}"
   current_release_dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd)" || exit 0
   releases_dir="$(cd -P "$RELEASES_DIR" 2>/dev/null && pwd)" || exit 0
   if [ "$RELEASE" != "latest" ] || [ -z "$guarded_release" ] ||
+    [ "$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)" != "$guarded_release" ] ||
     [ "$current_release_dir" != "$releases_dir/$guarded_release" ]; then
-    if [ "${CODEX_INSTALL_IF_CURRENT:-}" = "1" ]; then
-      echo "Daemon selection changed; retry the update." >&2
-      exit 1
-    fi
-    exit 0
-  fi
-  # An explicit daemon update may leave a local or pinned release. Scheduled
-  # updates still require the selected release to follow the latest channel.
-  if [ "${CODEX_INSTALL_IF_CURRENT:-}" != "1" ] &&
-    [ "$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)" != "$guarded_release" ]; then
     exit 0
   fi
 fi
@@ -1227,10 +1037,6 @@ cleanup_stale_install_artifacts
 
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
-    if [ "$DAEMON_ONLY" = "1" ]; then
-      echo "Refusing to overwrite existing daemon release $release_dir." >&2
-      exit 1
-    fi
     warn "Found incomplete existing release at $release_dir; reinstalling."
   fi
 
@@ -1240,12 +1046,14 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   step "Downloading Codex CLI"
   if [ "$install_layout" = "package" ]; then
     checksum_digest="$(release_asset_digest "$checksum_asset")"
-    download_file_with_fallback "$checksum_url" "$checksum_fallback_url" "$checksum_path" "$checksum_digest" "$checksum_asset" "$asset"
+    download_file "$checksum_url" "$checksum_path"
+    verify_archive_digest "$checksum_path" "$checksum_digest"
     expected_digest="$(package_archive_digest "$asset" "$checksum_path")"
   else
     expected_digest="$(release_asset_digest "$asset")"
   fi
-  download_file_with_fallback "$download_url" "$download_fallback_url" "$archive_path" "$expected_digest" "$asset"
+  download_file "$download_url" "$archive_path"
+  verify_archive_digest "$archive_path" "$expected_digest"
 
   step "Installing standalone package to $release_dir"
   if [ "$install_layout" = "package" ]; then
@@ -1254,30 +1062,12 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
     install_legacy_platform_npm_release "$release_dir" "$archive_path" "$vendor_target"
   fi
 fi
-if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
-  echo "Installed Codex command did not report expected version $resolved_version." >&2
-  exit 1
-fi
-if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
-  installed_codex="$release_dir/codex"
-  if [ "$install_layout" = "package" ]; then
-    installed_codex="$release_dir/bin/codex"
-  fi
-  if ! "$installed_codex" app-server daemon pid-update-loop --check-package-ownership >/dev/null 2>&1; then
-    echo "The production release does not support daemon-owned packages; the current selection was left unchanged." >&2
-    exit 1
-  fi
-fi
 update_current_link "$release_dir"
 if [ "$RELEASE" = "latest" ]; then
   printf '%s' "$release_name" > "$AUTO_UPDATE_VERSION.tmp.$$"
   mv -f "$AUTO_UPDATE_VERSION.tmp.$$" "$AUTO_UPDATE_VERSION"
 else
   rm -f "$AUTO_UPDATE_VERSION"
-fi
-if [ "$DAEMON_ONLY" = "1" ]; then
-  release_install_lock
-  exit 0
 fi
 update_visible_command "$release_dir"
 add_to_path

@@ -238,6 +238,7 @@ impl TurnEnvironment {
             ),
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: config.use_legacy_landlock,
+            sandbox_unavailable_by_construction: cfg!(target_os = "android"),
         }
     }
 
