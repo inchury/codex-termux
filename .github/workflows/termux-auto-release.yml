@@ -150,6 +150,13 @@ jobs:
             fi
           fi
 
+          # guardian/review.rs is not an Android/Termux compatibility patch.
+          # The published 0.156.1 Termux delta contains an older copy whose
+          # GuardianNodeReplPolicy API no longer matches the target upstream.
+          # Always retain the target upstream release version.
+          git checkout "${upstream_tag}" -- codex-rs/core/src/guardian/review.rs
+          git add codex-rs/core/src/guardian/review.rs
+
           # Keep this fork's automation files rather than the source fork's
           # release workflow copies carried by the compatibility patch.
           # Remove all upstream workflow files before restoring this fork's
