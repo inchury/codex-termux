@@ -31,14 +31,16 @@ jobs:
       upstream_tag: ${{ steps.prepare.outputs.upstream_tag }}
       version: ${{ steps.prepare.outputs.version }}
       v8_version: ${{ steps.prepare.outputs.v8_version }}
+      termux_source_tag: ${{ steps.prepare.outputs.termux_source_tag }}
+      termux_base_tag: ${{ steps.prepare.outputs.termux_base_tag }}
     steps:
-      - name: Checkout Termux fork
+      - name: Checkout automation repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Prepare candidate branch
+      - name: Prepare candidate from clean upstream release
         id: prepare
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,27 +72,55 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Continue from our most recent automated Termux release when one
-          # exists. On the first run, use the fork's main branch.
-          git fetch --force --tags origin
-          base_ref="$(git tag -l 'v*-termux.*' --sort=-v:refname | head -n 1 || true)"
-          if [ -z "${base_ref}" ]; then
-            base_ref="origin/main"
-          fi
-          echo "Termux base: ${base_ref}"
-          git checkout --detach "${base_ref}"
-
           if git remote get-url upstream >/dev/null 2>&1; then
             git remote set-url upstream https://github.com/openai/codex.git
           else
             git remote add upstream https://github.com/openai/codex.git
           fi
-          git fetch --no-tags upstream             "+refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+          if git remote get-url termux-source >/dev/null 2>&1; then
+            git remote set-url termux-source https://github.com/DioNanos/codex-termux.git
+          else
+            git remote add termux-source https://github.com/DioNanos/codex-termux.git
+          fi
 
-          # Keep the Termux delta from our previous release and merge the exact
-          # official stable tag. Any conflict stops the pipeline before a
-          # binary can be published.
-          git merge --no-ff --no-commit "${upstream_tag}"
+          # Use the last published Termux release as the compatibility-delta
+          # source. We do NOT merge its branch wholesale: that branch also
+          # followed unreleased upstream development commits.
+          termux_source_tag="$(gh api repos/DioNanos/codex-termux/releases/latest --jq '.tag_name')"
+          if ! [[ "${termux_source_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-termux\.[0-9]+$ ]]; then
+            echo "Unexpected Termux source release tag: ${termux_source_tag}" >&2
+            exit 1
+          fi
+          echo "termux_source_tag=${termux_source_tag}" >> "${GITHUB_OUTPUT}"
+
+          git fetch --force --no-tags termux-source             "refs/tags/${termux_source_tag}:refs/remotes/termux-source/release"
+
+          termux_base_tag="$(git show refs/remotes/termux-source/release:npm-package/package.json |             node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s);const m=(p.description||"").match(/rust-v[0-9]+\.[0-9]+\.[0-9]+/);if(!m)process.exit(2);process.stdout.write(m[0]);})')"
+          echo "termux_base_tag=${termux_base_tag}" >> "${GITHUB_OUTPUT}"
+          echo "Termux compatibility source: ${termux_source_tag} based on ${termux_base_tag}"
+
+          git fetch --force --no-tags upstream             "refs/tags/${termux_base_tag}:refs/tags/${termux_base_tag}"             "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+
+          # Extract ONLY the published Termux delta from its exact official base.
+          # This excludes unrelated upstream-main commits that happened to live
+          # in the old fork branch between releases.
+          git diff --binary "${termux_base_tag}" refs/remotes/termux-source/release             > "${RUNNER_TEMP}/termux-release-delta.patch"
+          if [ ! -s "${RUNNER_TEMP}/termux-release-delta.patch" ]; then
+            echo "Termux release delta is unexpectedly empty." >&2
+            exit 1
+          fi
+
+          git checkout --detach "${upstream_tag}"
+
+          # Apply the audited published delta onto the new stable upstream tag.
+          # --3way uses the old official base as the merge base. If a Termux
+          # compatibility change no longer applies cleanly, stop instead of
+          # publishing a guessed binary.
+          git apply --3way --index "${RUNNER_TEMP}/termux-release-delta.patch"
+
+          # Keep this fork's automation files rather than the source fork's
+          # release workflow copies carried by the compatibility patch.
+          git checkout origin/main --             .github/workflows/termux-npm-build-publish.yml             .github/workflows/termux-auto-release.yml
 
           VERSION="${version}" UPSTREAM_TAG="${upstream_tag}" node <<'NODE'
           const fs = require("node:fs");
@@ -108,7 +138,7 @@ jobs:
           }
           fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
           NODE
-          git add npm-package/package.json
+          git add npm-package/package.json             .github/workflows/termux-npm-build-publish.yml             .github/workflows/termux-auto-release.yml
 
           # The Codex build must have an audited Android rusty_v8 prebuild.
           # Do not silently compile against an unpinned or non-sandbox V8.
@@ -146,13 +176,15 @@ jobs:
               ) from exc
           PY
 
-          # Finish the merge only after metadata and V8 prerequisites are known
-          # to be valid. --allow-empty covers the rare retry where the official
-          # tag is already an ancestor but the GitHub Release was never created.
-          git commit --allow-empty -m "chore(termux): sync OpenAI Codex ${upstream_tag}"
+          # Validate the compatibility contract before spending runner time on
+          # the Android build. Cargo-backed checks remain enabled here.
+          CODEX_PUBLIC_SANITIZED_TREE=1 bash verify-patches.sh
 
-          # Push only a disposable candidate branch. main remains untouched
-          # unless the maintainer chooses to realign it manually.
+          git commit --allow-empty -m "chore(termux): port ${termux_source_tag} delta to ${upstream_tag}"
+
+          # Push only a disposable candidate branch. main stays an automation/
+          # maintenance branch; the successful release tag is the immutable
+          # source reference for distributed binaries.
           git push --force origin "HEAD:refs/heads/${candidate_branch}"
 
           echo "Candidate ${candidate_branch} prepared at $(git rev-parse HEAD)"
@@ -221,5 +253,5 @@ jobs:
           upstream_tag="$(gh api repos/openai/codex/releases/latest --jq '.tag_name' 2>/dev/null || echo unknown)"
           title="Termux auto-sync failed for ${upstream_tag}"
           if ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100               --json title --jq '.[].title' | grep -Fxq "${title}"; then
-            gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "Automatic upstream synchronization failed before the Termux build could start. Typical causes are an upstream merge conflict or a new rusty_v8 version without an audited Android prebuild. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "Automatic upstream synchronization failed before the Termux build could start. The workflow ports the published Termux release delta onto the new official stable tag and fails closed if that delta no longer applies, the patch contract is broken, or a new rusty_v8 Android prebuild is required. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           fi
