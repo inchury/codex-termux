@@ -6,40 +6,11 @@
 name: termux-npm-build-publish
 
 on:
+  push:
+    branches:
+      - main
+      - lts
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: "Git ref/branch to build; empty uses the triggering ref"
-        required: false
-        default: ""
-        type: string
-      publish_release:
-        description: "Create a GitHub Release from the built Termux package"
-        required: false
-        default: false
-        type: boolean
-      release_tag:
-        description: "Release tag to create when publish_release is true"
-        required: false
-        default: ""
-        type: string
-  workflow_call:
-    inputs:
-      source_ref:
-        description: "Git ref/branch to build"
-        required: false
-        default: ""
-        type: string
-      publish_release:
-        description: "Create a GitHub Release from the built Termux package"
-        required: false
-        default: false
-        type: boolean
-      release_tag:
-        description: "Release tag to create when publish_release is true"
-        required: false
-        default: ""
-        type: string
 
 jobs:
   build-android-arm64:
@@ -47,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
-      contents: write
+      contents: read
     env:
       ANDROID_NDK_VERSION: "28.2.13676358"
       # Keep the release tarball under the
@@ -62,7 +33,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
           persist-credentials: false
           # The release contract gate (verify-patches.sh, BASE relation) runs
           # `git merge-base --is-ancestor rust-v* HEAD` and needs BOTH
@@ -78,7 +48,6 @@ jobs:
           fetch-tags: true
 
       - name: Verify checked-out revision
-        if: ${{ inputs.source_ref == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -232,28 +201,6 @@ jobs:
             ${{ env.PACKAGE_SHA256_FILE }}
           if-no-files-found: error
 
-      # npm publish intentionally remains disabled. GitHub Release publishing
-      # is optional and uses only the repository-scoped GITHUB_TOKEN.
-      - name: Publish GitHub Release
-        if: ${{ inputs.publish_release }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          SOURCE_REF: ${{ inputs.source_ref }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${RELEASE_TAG}" ]; then
-            echo "release_tag is required when publish_release=true" >&2
-            exit 1
-          fi
-
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} already exists; nothing to publish."
-            exit 0
-          fi
-
-          cp "${PACKAGE_SHA256_FILE}" "${RUNNER_TEMP}/SHA256SUMS"
-          target="${SOURCE_REF:-${GITHUB_REF_NAME}}"
-
-          gh release create "${RELEASE_TAG}"             "${PACKAGE_TGZ}"             "${RUNNER_TEMP}/SHA256SUMS"             --repo "${GITHUB_REPOSITORY}"             --target "${target}"             --title "${RELEASE_TAG}"             --notes "Automated Android ARM64 / Termux build from OpenAI Codex upstream. Package version: ${PACKAGE_VERSION}."
+      # npm publish intentionally removed: publishing is performed locally with
+      # ~/.npmrc on the maintainer's release host, never from CI. The Android
+      # arm64 npm tarball is available as the uploaded build artifact above.
