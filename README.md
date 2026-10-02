@@ -12,8 +12,8 @@
 > Native Codex CLI for **Termux / Android ARM64**.
 > This fork realigns with selected upstream OpenAI Codex milestones and carries only the Android/Termux compatibility delta needed to package and run it.
 
-[![npm termux](https://img.shields.io/npm/v/@mmmbuto/codex-cli-termux?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/codex-cli-termux)
-[![latest release](https://img.shields.io/github/v/release/DioNanos/codex-termux?style=flat-square)](https://github.com/DioNanos/codex-termux/releases/latest)
+[![npm termux](https://img.shields.io/npm/v/@inchury/codex-cli-termux?style=flat-square&logo=npm)](https://www.npmjs.com/package/@inchury/codex-cli-termux)
+[![latest release](https://img.shields.io/github/v/release/DioNanos/codex-termux?style=flat-square)](https://github.com/inchury/codex-termux/releases/latest)
 
 <p align="center">
   <img src="./.github/termux-robot.png" alt="Termux robot" width="80%" />
@@ -26,7 +26,7 @@
 ```bash
 pkg update && pkg upgrade -y
 pkg install nodejs-lts -y
-npm install -g @mmmbuto/codex-cli-termux@latest
+npm install -g @inchury/codex-cli-termux@latest
 codex --version
 codex login
 ```
@@ -55,7 +55,7 @@ What this fork does not do:
 ## Current Termux Delta
 
 - browser login uses `termux-open-url`
-- self-update points to `DioNanos/codex-termux` and `@mmmbuto/codex-cli-termux`
+- self-update points to `DioNanos/codex-termux` and `@inchury/codex-cli-termux`
 - packaged wrappers set `CODEX_SELF_EXE` to the native ELF, sanitize `LD_LIBRARY_PATH`, and bundle `libc++_shared.so`
 - Android binaries are linked with `RUNPATH=$ORIGIN`
 - `exec`/code-mode now runs for real on Android via the in-process V8 runtime (no longer a stub) - the meaningful capability gain on Termux
@@ -65,10 +65,10 @@ What this fork does not do:
 
 ## Releases and Updates
 
-- Latest GitHub release: [releases/latest](https://github.com/DioNanos/codex-termux/releases/latest)
+- Latest GitHub release: [releases/latest](https://github.com/inchury/codex-termux/releases/latest)
 - Upstream base: OpenAI Codex `rust-v0.155.0`, published as `0.155.0` on the npm
   `latest` channel with a matching GitHub tag and release.
-- npm package: [`@mmmbuto/codex-cli-termux`](https://www.npmjs.com/package/@mmmbuto/codex-cli-termux)
+- npm package: [`@inchury/codex-cli-termux`](https://www.npmjs.com/package/@inchury/codex-cli-termux)
 - Legacy `@mmmbuto/codex-cli-lts` (OpenAI Codex 0.80.x) is archived; current builds live in this package or in [`@mmmbuto/codex-vl`](https://www.npmjs.com/package/@mmmbuto/codex-vl) (multi-platform).
 
 Maintainer publish flow:
