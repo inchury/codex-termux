@@ -1,5 +1,5 @@
 {
-  "name": "@mmmbuto/codex-cli-termux",
+  "name": "@inchury/codex-cli-termux",
   "version": "0.156.1-termux.1",
   "description": "OpenAI Codex CLI upstream rust-v0.156.1 packaged for Android Termux (ARM64), with GPT-6 Astra/Sol/Luna catalog support, upstream daemon-managed update flow fail-closed for the fork, AGENTS.md discovery, background-terminal status, remote-attachment and sandbox-approval compatibility fixes, RUNPATH=$ORIGIN hardening for direct native invocation, and fork-owned update diagnostics.",
   "type": "module",
@@ -31,15 +31,15 @@
     "ai",
     "coding-agent"
   ],
-  "author": "DioNanos",
+  "author": "inchury",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DioNanos/codex-termux.git"
+    "url": "git+https://github.com/inchury/codex-termux.git"
   },
-  "homepage": "https://github.com/DioNanos/codex-termux#readme",
+  "homepage": "https://github.com/inchury/codex-termux#readme",
   "bugs": {
-    "url": "https://github.com/DioNanos/codex-termux/issues"
+    "url": "https://github.com/inchury/codex-termux/issues"
   },
   "engines": {
     "node": ">=18.0.0"
