@@ -472,12 +472,14 @@ else
 fi
 
 printf "Patch #26 (Model Catalog Instruction Fallback): "
-# This is a source-fork behavior patch, not required for Android/Termux
-# portability. Automated upstream ports deliberately retain the target
-# upstream model-catalog implementation because its API changes frequently.
-if [ "${VERIFY_PATCHES_SKIP_MODEL_CATALOG_FALLBACK:-0}" = "1" ]; then
-  skip "excluded from automated Termux upstream port"
-elif [ "${VERIFY_PATCHES_SKIP_CARGO:-0}" = "1" ]; then
+# 0.156 moved instruction rendering to `prompts::render_model_instructions`
+# (an `unwrap_or_default`), so a custom catalog entry without a usable
+# instructions template would render empty. The fork keeps its
+# `ensure_catalog_instructions` fallback inside `with_config_overrides`, and
+# this guard runs the manager test that pins the contract: a catalog model
+# without a usable template gets `BASE_INSTRUCTIONS` and the rendering is
+# never empty. It does not name the implementation hook in this guard.
+if [ "${VERIFY_PATCHES_SKIP_CARGO:-0}" = "1" ]; then
   if [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${CI:-}" ]; then
     echo "skip not allowed in CI"
     fail
