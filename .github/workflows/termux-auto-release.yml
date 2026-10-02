@@ -157,6 +157,33 @@ jobs:
           git checkout "${upstream_tag}" -- codex-rs/core/src/guardian/review.rs
           git add codex-rs/core/src/guardian/review.rs
 
+          # Adapt the source fork's model-catalog tests to newer upstream
+          # ModelMessages fields without replacing the Termux/source-fork behavior patch.
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          protocol = Path("codex-rs/protocol/src/openai_models.rs").read_text()
+          test_path = Path("codex-rs/models-manager/src/model_info_tests.rs")
+          tests = test_path.read_text()
+
+          if "pub content_filter_guidance: Option<String>" in protocol:
+              pattern = re.compile(r"(ModelMessages\s*\{\n)([ \t]*)")
+              def add_field(match):
+                  start = match.end()
+                  nearby = tests[start:start + 300]
+                  if "content_filter_guidance:" in nearby:
+                      return match.group(0)
+                  indent = match.group(2)
+                  return match.group(1) + indent + "content_filter_guidance: None,\n" + indent
+
+              updated = pattern.sub(add_field, tests)
+              if updated != tests:
+                  test_path.write_text(updated)
+                  print("Adapted ModelMessages test initializers for content_filter_guidance")
+          PY
+          git add codex-rs/models-manager/src/model_info_tests.rs
+
           # Keep this fork's automation files rather than the source fork's
           # release workflow copies carried by the compatibility patch.
           # Remove all upstream workflow files before restoring this fork's
