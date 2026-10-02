@@ -150,12 +150,15 @@ jobs:
             fi
           fi
 
-          # guardian/review.rs is not an Android/Termux compatibility patch.
-          # The published 0.156.1 Termux delta contains an older copy whose
-          # GuardianNodeReplPolicy API no longer matches the target upstream.
-          # Always retain the target upstream release version.
-          git checkout "${upstream_tag}" -- codex-rs/core/src/guardian/review.rs
-          git add codex-rs/core/src/guardian/review.rs
+          # Guardian review policy files are not Android/Termux compatibility
+          # patches. Keep the target upstream pair together so their API stays
+          # coherent across Codex releases.
+          git checkout "${upstream_tag}" -- \
+            codex-rs/core/src/guardian/review.rs \
+            codex-rs/core/src/context/guardian_node_repl_policy.rs
+          git add \
+            codex-rs/core/src/guardian/review.rs \
+            codex-rs/core/src/context/guardian_node_repl_policy.rs
 
           # Adapt the source fork's model-catalog tests to newer upstream
           # ModelMessages fields without replacing the Termux/source-fork behavior patch.
