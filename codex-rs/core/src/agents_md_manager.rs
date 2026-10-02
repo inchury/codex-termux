@@ -114,7 +114,16 @@ impl AgentsMdManager {
             }
             if !refresh_repository {
                 let state = self.state.lock().await;
-                if state.instructions.user == instructions.user
+                // The environment selection is not the only input to repository
+                // discovery: so are the files on disk. A session that starts
+                // without an AGENTS.md and then has one created — which is what
+                // `/init` does — kept reporting that none existed, because the
+                // selection had not changed. Skip the repository work only once
+                // instructions have actually been found; re-running discovery
+                // while nothing exists is a bounded set of path probes.
+                // (upstream issue #37704, fork fix 0.147.2)
+                if cached.is_some()
+                    && state.instructions.user == instructions.user
                     && state.instructions.thread == instructions.thread
                 {
                     return Ok(cached);

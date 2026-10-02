@@ -10,14 +10,9 @@ machines that should expose app-server with `remote_control` enabled.
 
 ## Platform support
 
-The daemon supports Linux, macOS, and Windows using platform-specific process
-and file-locking primitives. Windows startup requires a non-elevated terminal
-whose host permits detached child processes.
-
-Windows automatic attachment requires the canonical socket address to fit the
-108-byte AF_UNIX limit (including its terminator). A short junction alias whose
-resolved address exceeds that limit falls back to the embedded server. Use a
-shorter `CODEX_HOME` to share the daemon; discovery does not trust a mutable alias.
+The current daemon implementation is Unix-only. It uses pidfile-backed
+daemonization plus Unix process and file-locking primitives, and does not yet
+support Windows lifecycle management.
 
 Shared clients use the environment inherited when the daemon started. Opening a
 new terminal or clearing variables there does not clear the running daemon's
@@ -75,11 +70,11 @@ running.
 
 ## Bootstrap flow
 
-For a new Linux or macOS machine:
+For a new remote machine:
 
 ```sh
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-$HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
+npm install -g @mmmbuto/codex-cli-termux@latest
+codex app-server daemon bootstrap --remote-control
 ```
 
 On Windows, use a non-elevated PowerShell terminal whose host allows breakaway:
@@ -101,6 +96,10 @@ pidfile-backed detached process. It launches a detached updater loop when
 automatic updates are enabled, the installer selected the stable `latest`
 channel, and the managed binary supports the updater command.
 
+On Android, `bootstrap` uses the native `codex.bin` path supplied by the package
+launcher through `CODEX_SELF_EXE` as the managed executable, and keeps automatic
+updater fetches disabled for this Termux fork.
+
 ## Installation and update cases
 
 New daemons use `CODEX_HOME/packages/app-server-daemon/current/bin/codex`
@@ -116,9 +115,9 @@ The old CLI package files and selection remain unchanged.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| Latest-channel installer has run; `start` or `bootstrap` is used with automatic updates enabled | Managed binary and detached updater when supported | When supported, the platform's installer runs on the configured cadence. | When supported, the running server restarts with the new binary before the updater replaces itself. |
-| Installer selected an explicit release; `bootstrap` is used | Managed binary only | No; the selected release stays pinned. | No; an explicit restart uses the selected binary. |
-| Another tool updates the managed binary | A fresh start or explicit restart uses it; a running server is reused. | Yes, when a latest-channel updater is running, on the configured cadence. | An updater that was running through the change compares binary contents on its next successful installer pass and refreshes the server first. |
+| The fork npm package has run, but only `start` is used | On Android, `start` uses the native `codex.bin` path from `CODEX_SELF_EXE` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
+| The fork npm package has run, then `bootstrap` is used | The pidfile backend uses the native managed path supplied by the launcher | No. Bootstrap stops any stale updater loop and leaves `autoUpdateEnabled` false. | No. Update with `npm install -g @mmmbuto/codex-cli-termux@latest`, then restart the daemon. |
+| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | No | No. Restart app-server after updating the managed path. |
 
 ### Managed packages
 
@@ -126,35 +125,26 @@ For dedicated and retained legacy daemon installations:
 
 - lifecycle commands use the selected daemon package, regardless of the invoking
   CLI version; they do not implicitly replace an existing package
+
+### Termux npm installs
+
+For installs created by the fork npm package:
+
+- lifecycle commands use the native package binary supplied through
+  `CODEX_SELF_EXE`
 - `bootstrap` is supported
-- managed `start`, `restart`, and `bootstrap` ensure a single detached pid-backed
-  updater loop only when automatic updates are enabled for a stable latest-channel
-  release whose managed binary supports the updater command
-- the installer records the latest-channel selection alongside `current`;
-  selecting an explicit release clears it, even if that version is currently
-  latest. The updater checks the selection again while holding the install lock
-  so an in-flight update cannot override a new pin
-- installs made before the installer recorded channel selections need one new
-  `latest` installation to opt into automatic updates; until then the daemon
-  continues to serve app-server without updating the selected release
-- after a successful refresh, if app-server is running and the managed binary
-  contents changed, the updater restarts app-server with that binary first and
-  only then replaces its own process image
-- the updater loop is not reboot-persistent; a managed start after reboot
-  starts it again
+- `bootstrap` does not fetch installers or spawn an updater loop
+- updates are explicit through `@mmmbuto/codex-cli-termux@latest`
 
 ### Out-of-band updates
 
 This daemon does not watch arbitrary executable files for replacement. If some
 other tool updates the managed binary path:
 
-- an updater that was already running notices a changed managed
-  binary on its next successful scheduled installer pass; if
-  app-server is running, it refreshes app-server first and then refreshes itself
-  once that replacement starts successfully
-- if the updater was absent during a same-version binary replacement, a later
-  managed start recovers it but cannot infer the running server's previous
-  executable identity; use `codex app-server daemon restart` to refresh the server
+- without `bootstrap`, a currently running app-server remains on the old
+  executable image until an explicit `restart`
+- with `bootstrap`, a currently running app-server still remains on the old
+  executable image until an explicit `restart`
 
 ## Lifecycle semantics
 
@@ -188,5 +178,5 @@ The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
 
 - `settings.json` for remote-control launch settings and updater preferences
 - `app-server.pid` for the app-server process record
-- `app-server-updater.pid` for the pid-backed standalone updater loop
+- `app-server-updater.pid` for stopping stale updater loops from older builds
 - `daemon.lock` for daemon-wide lifecycle serialization

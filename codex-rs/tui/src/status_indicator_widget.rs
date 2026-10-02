@@ -35,6 +35,10 @@ use crate::width::display_width;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
+/// Header the chat widget sets while it is only polling a background terminal.
+/// Defined here and used by the producer as well, so the two cannot drift: the
+/// indicator's animation rate keys off this exact state.
+pub(crate) const WAITING_ON_BACKGROUND_TERMINAL_HEADER: &str = "Waiting for background terminal";
 mod timer;
 pub(crate) use timer::StatusTimer;
 
@@ -44,6 +48,23 @@ use summary_shimmer::summary_shimmer;
 
 pub(crate) const STATUS_DETAILS_DEFAULT_MAX_LINES: usize = 3;
 const DETAILS_PREFIX: &str = "  └ ";
+
+/// Frame interval for the status indicator: the upstream
+/// 32 ms rate applies only to progress/shimmer animation; waiting on a
+/// background terminal keeps the fork's faster 200 ms rate instead of the
+/// generic 1 s idle ticker.
+fn frame_interval_for_state(
+    animations_with_progress_or_shimmer: bool,
+    waiting_on_background_terminal: bool,
+) -> Duration {
+    if animations_with_progress_or_shimmer {
+        Duration::from_millis(32)
+    } else if waiting_on_background_terminal {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_millis(1_000)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatusDetailsCapitalization {
@@ -299,17 +320,16 @@ impl Renderable for StatusIndicator<'_> {
         if area.is_empty() {
             return;
         }
-        if self.row.animations_enabled || self.timer.display_started_at.is_some() {
-            let interval_ms = if self.row.animations_enabled
-                && (self.row.effects.progress || self.row.effects.shimmer)
-            {
-                32
-            } else {
-                1_000
-            };
-            self.row
-                .frame_requester
-                .schedule_frame_in(Duration::from_millis(interval_ms));
+        if self.row.animations_enabled
+            || self.row.header == WAITING_ON_BACKGROUND_TERMINAL_HEADER
+            || self.timer.display_started_at.is_some()
+        {
+            let interval = frame_interval_for_state(
+                self.row.animations_enabled
+                    && (self.row.effects.progress || self.row.effects.shimmer),
+                self.row.header == WAITING_ON_BACKGROUND_TERMINAL_HEADER,
+            );
+            self.row.frame_requester.schedule_frame_in(interval);
         }
         Paragraph::new(Text::from(self.lines(area.width))).render(area, buf);
     }
@@ -355,6 +375,28 @@ mod tests {
         assert_eq!(fmt_elapsed_compact(/*elapsed_secs*/ 3600), "1h 00m 00s");
         assert_eq!(fmt_elapsed_compact(3600 + 60 + 1), "1h 01m 01s");
         assert_eq!(fmt_elapsed_compact(25 * 3600 + 2 * 60 + 3), "25h 02m 03s");
+    }
+
+    #[test]
+    fn frame_interval_is_mutation_sensitive_for_background_terminal_waits() {
+        // Without the waiting-background branch a waiting-only status falls
+        // back to the 1 s idle ticker and progress re-renders at 32 ms.
+        assert_eq!(
+            frame_interval_for_state(false, true),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            frame_interval_for_state(true, true),
+            Duration::from_millis(32)
+        );
+        assert_eq!(
+            frame_interval_for_state(true, false),
+            Duration::from_millis(32)
+        );
+        assert_eq!(
+            frame_interval_for_state(false, false),
+            Duration::from_millis(1_000)
+        );
     }
 
     #[test]

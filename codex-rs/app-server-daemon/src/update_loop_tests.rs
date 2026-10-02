@@ -1034,3 +1034,25 @@ printf '%s' '{release}' > '{marker}'
         );
     }
 }
+
+/// The standalone auto-updater MUST stay disabled in the fork: the upstream
+/// installer would replace this binary and silently remove fork behavior.
+#[tokio::test]
+async fn install_latest_standalone_is_disabled_in_fork() {
+    let result = super::install_latest_standalone().await;
+    let error =
+        result.expect_err("standalone updates must fail closed without fetching an installer");
+    let message = format!("{error}");
+    assert!(
+        message.contains("codex-termux fork"),
+        "fork-disabled error must identify the fork: {message}"
+    );
+    assert!(
+        message.contains("disabled"),
+        "fork-disabled error must state that updates are disabled: {message}"
+    );
+    assert!(
+        message.contains("@mmmbuto/codex-cli-termux"),
+        "fork-disabled error must name the supported package: {message}"
+    );
+}

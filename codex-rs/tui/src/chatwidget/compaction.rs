@@ -31,6 +31,24 @@ impl ChatWidget {
         self.set_status_header(COMPACTION_HEADER.to_string());
     }
 
+    /// A local compaction is opened with the pending-start latch (`submit_op` ->
+    /// `prepare_local_op_submission`) but it is NOT a user turn: nothing sends
+    /// `TaskStarted`/`TurnComplete` for it, and its completion arrives as
+    /// `ContextCompacted`. Left alone, that latch stays high with no turn
+    /// running and freezes the composer: every later submission is queued
+    /// instead of starting a turn, the queue can never be drained, and a loop
+    /// tick is refused as `BlockedUserTurn`. Clear it at the boundary that
+    /// abandons it and let the queue drain again.
+    pub(super) fn on_context_compacted_notification(&mut self) {
+        if !self.input_queue.user_turn_pending_start || self.turn_lifecycle.agent_turn_running {
+            return;
+        }
+        self.input_queue.user_turn_pending_start = false;
+        tracing::warn!("cleared an orphan pending user-turn start after a local compaction");
+        self.refresh_pending_input_preview();
+        let _ = self.maybe_send_next_queued_input();
+    }
+
     pub(super) fn clear_context_compaction(&mut self) {
         if self.status_state.compaction.take().is_some() {
             self.bottom_pane

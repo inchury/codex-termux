@@ -106,6 +106,7 @@ impl Session {
                             session.windows_sandbox_proxy_settings_mode,
                         ),
                         use_legacy_landlock: environment.config().use_legacy_landlock,
+                        sandbox_unavailable_by_construction: cfg!(target_os = "android"),
                     });
                 let mut env = apply_unified_exec_env(HashMap::new());
                 env.insert(

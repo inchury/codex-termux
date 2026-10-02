@@ -1,0 +1,346 @@
+name: termux-auto-release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/termux-auto-release.yml"
+      - ".github/workflows/termux-auto-build.yml"
+  schedule:
+    # GitHub cannot subscribe directly to another repository's release event,
+    # so poll the official stable release once per hour.
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: termux-auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  prepare:
+    name: Prepare upstream Termux candidate
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.prepare.outputs.should_build }}
+      candidate_branch: ${{ steps.prepare.outputs.candidate_branch }}
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+      upstream_tag: ${{ steps.prepare.outputs.upstream_tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      v8_version: ${{ steps.prepare.outputs.v8_version }}
+      termux_source_tag: ${{ steps.prepare.outputs.termux_source_tag }}
+      termux_base_tag: ${{ steps.prepare.outputs.termux_base_tag }}
+    steps:
+      - name: Checkout automation repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Prepare candidate from clean upstream release
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq '.tag_name')"
+          if ! [[ "${upstream_tag}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Latest OpenAI Codex release is not a stable rust-vX.Y.Z tag: ${upstream_tag}" >&2
+            exit 1
+          fi
+
+          version="${upstream_tag#rust-v}"
+          release_tag="v${version}-termux.1"
+          candidate_branch="auto/termux-v${version}"
+
+          echo "upstream_tag=${upstream_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "candidate_branch=${candidate_branch}" >> "${GITHUB_OUTPUT}"
+
+          if gh release view "${release_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${release_tag} already exists."
+            echo "should_build=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/openai/codex.git
+          else
+            git remote add upstream https://github.com/openai/codex.git
+          fi
+          if git remote get-url termux-source >/dev/null 2>&1; then
+            git remote set-url termux-source https://github.com/DioNanos/codex-termux.git
+          else
+            git remote add termux-source https://github.com/DioNanos/codex-termux.git
+          fi
+
+          # Use the last published Termux release as the compatibility-delta
+          # source. We do NOT merge its branch wholesale: that branch also
+          # followed unreleased upstream development commits.
+          termux_source_tag="$(gh api repos/DioNanos/codex-termux/releases/latest --jq '.tag_name')"
+          if ! [[ "${termux_source_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-termux\.[0-9]+$ ]]; then
+            echo "Unexpected Termux source release tag: ${termux_source_tag}" >&2
+            exit 1
+          fi
+          echo "termux_source_tag=${termux_source_tag}" >> "${GITHUB_OUTPUT}"
+
+          git fetch --force --no-tags termux-source             "refs/tags/${termux_source_tag}:refs/remotes/termux-source/release"
+
+          termux_base_tag="$(git show refs/remotes/termux-source/release:npm-package/package.json |             node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s);const m=(p.description||"").match(/rust-v[0-9]+\.[0-9]+\.[0-9]+/);if(!m)process.exit(2);process.stdout.write(m[0]);})')"
+          echo "termux_base_tag=${termux_base_tag}" >> "${GITHUB_OUTPUT}"
+          echo "Termux compatibility source: ${termux_source_tag} based on ${termux_base_tag}"
+
+          git fetch --force --no-tags upstream             "refs/tags/${termux_base_tag}:refs/tags/${termux_base_tag}"             "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+
+          # Extract ONLY the published Termux delta from its exact official base.
+          # This excludes unrelated upstream-main commits that happened to live
+          # in the old fork branch between releases.
+          git diff --binary "${termux_base_tag}" refs/remotes/termux-source/release             > "${RUNNER_TEMP}/termux-release-delta.patch"
+          if [ ! -s "${RUNNER_TEMP}/termux-release-delta.patch" ]; then
+            echo "Termux release delta is unexpectedly empty." >&2
+            exit 1
+          fi
+
+          git checkout --detach "${upstream_tag}"
+
+          # Apply the audited published delta onto the new stable upstream tag.
+          # --3way uses the old official base as the merge base. If a Termux
+          # compatibility change no longer applies cleanly, stop instead of
+          # publishing a guessed binary.
+          set +e
+          git apply --3way --index "${RUNNER_TEMP}/termux-release-delta.patch"
+          apply_rc=$?
+          set -e
+
+          if [ "${apply_rc}" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -z "${conflicts}" ]; then
+              echo "Termux delta failed without merge conflicts." >&2
+              exit "${apply_rc}"
+            fi
+
+            unexpected=0
+            while IFS= read -r path; do
+              case "${path}" in
+                CHANGELOG.md|codex-rs/cli/tests/app_server_daemon.rs|codex-rs/core/src/context/world_state/persistent_mode.rs|codex-rs/core/src/context/world_state/persistent_mode_tests.rs|codex-rs/core/src/guardian/review.rs|codex-rs/core/src/guardian/review_session_tests.rs|codex-rs/core/src/session/step_activation.rs|codex-rs/core/src/session/world_state.rs)
+                  echo "Keeping upstream version for known non-Termux conflict: ${path}"
+                  git checkout --ours -- "${path}"
+                  git add "${path}"
+                  ;;
+                *)
+                  echo "Unexpected Termux delta conflict: ${path}" >&2
+                  unexpected=1
+                  ;;
+              esac
+            done <<< "${conflicts}"
+
+            if [ "${unexpected}" -ne 0 ] || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+              echo "Termux delta requires manual review; refusing to publish." >&2
+              exit 1
+            fi
+          fi
+
+          # Guardian review policy files are not Android/Termux compatibility
+          # patches. Keep the target upstream pair together so their API stays
+          # coherent across Codex releases.
+          git checkout "${upstream_tag}" -- \
+            codex-rs/core/src/guardian/review.rs \
+            codex-rs/core/src/context/guardian_node_repl_policy.rs
+          git add \
+            codex-rs/core/src/guardian/review.rs \
+            codex-rs/core/src/context/guardian_node_repl_policy.rs
+
+          # Adapt the source fork's model-catalog tests to newer upstream
+          # ModelMessages fields without replacing the Termux/source-fork behavior patch.
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          protocol = Path("codex-rs/protocol/src/openai_models.rs").read_text()
+          test_path = Path("codex-rs/models-manager/src/model_info_tests.rs")
+          tests = test_path.read_text()
+
+          if "pub content_filter_guidance: Option<String>" in protocol:
+              pattern = re.compile(r"(ModelMessages\s*\{\n)([ \t]*)")
+              def add_field(match):
+                  start = match.end()
+                  nearby = tests[start:start + 300]
+                  if "content_filter_guidance:" in nearby:
+                      return match.group(0)
+                  indent = match.group(2)
+                  return match.group(1) + indent + "content_filter_guidance: None,\n" + indent
+
+              updated = pattern.sub(add_field, tests)
+              if updated != tests:
+                  test_path.write_text(updated)
+                  print("Adapted ModelMessages test initializers for content_filter_guidance")
+          PY
+          git add codex-rs/models-manager/src/model_info_tests.rs
+
+          # Keep this fork's automation files rather than the source fork's
+          # release workflow copies carried by the compatibility patch.
+          # Remove all upstream workflow files before restoring this fork's
+          # automation. Otherwise the GitHub token cannot push the candidate
+          # branch when the upstream delta adds or modifies workflow files.
+          git rm -r -f --ignore-unmatch .github/workflows
+          git checkout origin/main -- .github/workflows
+
+          VERSION="${version}" UPSTREAM_TAG="${upstream_tag}" node <<'NODE'
+          const fs = require("node:fs");
+          const file = "npm-package/package.json";
+          const pkg = JSON.parse(fs.readFileSync(file, "utf8"));
+          pkg.version = `${process.env.VERSION}-termux.1`;
+          const marker = `upstream ${process.env.UPSTREAM_TAG}`;
+          if (/upstream rust-v\d+\.\d+\.\d+/.test(pkg.description || "")) {
+            pkg.description = pkg.description.replace(
+              /upstream rust-v\d+\.\d+\.\d+/,
+              marker,
+            );
+          } else {
+            pkg.description = `OpenAI Codex CLI ${marker} packaged for Android Termux (ARM64).`;
+          }
+          fs.writeFileSync(file, JSON.stringify(pkg, null, 2) + "\n");
+          NODE
+
+          mkdir -p .release
+          cat > ".release/v${version}-termux.1.md" <<EOF
+          # [${version}-termux.1]
+
+          Termux / Android ARM64 build based on OpenAI Codex \`${upstream_tag}\`.
+          EOF
+
+          changelog_tmp="$(mktemp)"
+          {
+            printf '# [%s-termux.1]\n\n' "${version}"
+            printf -- '- Automated Termux / Android ARM64 port of OpenAI Codex \`%s\`.\n\n' "${upstream_tag}"
+            cat CHANGELOG.md
+          } > "${changelog_tmp}"
+          mv "${changelog_tmp}" CHANGELOG.md
+
+          git add npm-package/package.json CHANGELOG.md ".release/v${version}-termux.1.md" .github/workflows
+
+          # The Codex build must have an audited Android rusty_v8 prebuild.
+          # Do not silently compile against an unpinned or non-sandbox V8.
+          v8_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          lock = tomllib.loads(Path("codex-rs/Cargo.lock").read_text())
+          versions = sorted({p["version"] for p in lock["package"] if p["name"] == "v8"})
+          if len(versions) != 1:
+              raise SystemExit(f"expected one v8 version, got {versions}")
+          print(versions[0])
+          PY
+          )"
+          echo "v8_version=${v8_version}" >> "${GITHUB_OUTPUT}"
+
+          V8_VERSION="${v8_version}" python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          version = os.environ["V8_VERSION"]
+          manifest = tomllib.loads(Path("third_party/v8/android-artifacts.toml").read_text())
+          try:
+              target = manifest["versions"][version]["targets"]["aarch64-linux-android"]
+              profile = target["profiles"]["ptrcomp_sandbox_release"]
+              for key in ("archive_sha256", "binding_sha256"):
+                  digest = profile[key]
+                  if len(digest) != 64:
+                      raise KeyError(key)
+          except KeyError as exc:
+              raise SystemExit(
+                  f"Android rusty_v8 {version} ptrcomp_sandbox_release is not pinned; "
+                  "run rusty-v8-android-release first and add its checksums to "
+                  "third_party/v8/android-artifacts.toml"
+              ) from exc
+          PY
+
+          # Validate the compatibility contract before spending runner time on
+          # the Android build. Cargo-backed checks remain enabled here.
+          CODEX_PUBLIC_SANITIZED_TREE=1 bash verify-patches.sh
+
+          git commit --allow-empty -m "chore(termux): port ${termux_source_tag} delta to ${upstream_tag}"
+
+          # Push only a disposable candidate branch. main stays an automation/
+          # maintenance branch; the successful release tag is the immutable
+          # source reference for distributed binaries.
+          git push --force origin "HEAD:refs/heads/${candidate_branch}"
+
+          echo "Candidate ${candidate_branch} prepared at $(git rev-parse HEAD)"
+          echo "should_build=true" >> "${GITHUB_OUTPUT}"
+
+  build-release:
+    name: Build and publish Termux release
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_build == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/termux-auto-build.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.candidate_branch }}
+      publish_release: true
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+
+  finish:
+    name: Finalize automation
+    needs:
+      - prepare
+      - build-release
+    if: ${{ always() && needs.prepare.outputs.should_build == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+      BUILD_RESULT: ${{ needs.build-release.result }}
+    steps:
+      - name: Clean candidate branch after successful release
+        if: ${{ env.BUILD_RESULT == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method DELETE             "repos/${GITHUB_REPOSITORY}/git/refs/heads/${CANDIDATE_BRANCH}" || true
+
+      - name: Report build failure
+        if: ${{ env.BUILD_RESULT != 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Termux auto-build failed for ${UPSTREAM_TAG}"
+          if ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100               --json title --jq '.[].title' | grep -Fxq "${title}"; then
+            gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "The automatic Termux build for **${UPSTREAM_TAG}** failed. The candidate branch **${CANDIDATE_BRANCH}** was kept for inspection. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi
+
+  report-prepare-failure:
+    name: Report sync failure
+    needs: prepare
+    if: ${{ always() && needs.prepare.result == 'failure' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Open one actionable issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq '.tag_name' 2>/dev/null || echo unknown)"
+          title="Termux auto-sync failed for ${upstream_tag}"
+          if ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100               --json title --jq '.[].title' | grep -Fxq "${title}"; then
+            gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "Automatic upstream synchronization failed before the Termux build could start. The workflow ports the published Termux release delta onto the new official stable tag and fails closed if that delta no longer applies, the patch contract is broken, or a new rusty_v8 Android prebuild is required. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi

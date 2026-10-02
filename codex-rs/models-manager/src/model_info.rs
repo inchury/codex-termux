@@ -47,16 +47,43 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
         let model_messages = model.model_messages.get_or_insert_default();
         model_messages.instructions_template = Some(base_instructions.clone());
         model_messages.instructions_variables = None;
-    } else if config.personality == Some(Personality::None)
-        && let Some(instructions_template) = model
-            .model_messages
-            .as_mut()
-            .and_then(|messages| messages.instructions_template.as_mut())
-    {
-        *instructions_template = strip_personality_section(std::mem::take(instructions_template));
+    } else {
+        if config.personality == Some(Personality::None)
+            && let Some(instructions_template) = model
+                .model_messages
+                .as_mut()
+                .and_then(|messages| messages.instructions_template.as_mut())
+        {
+            *instructions_template =
+                strip_personality_section(std::mem::take(instructions_template));
+        }
+        ensure_catalog_instructions(&mut model);
     }
 
     model
+}
+
+/// A custom catalog entry without a usable instructions template would render
+/// empty instructions under the 0.156 render path (`render_model_instructions`
+/// does `unwrap_or_default`), so give it the built-in base instructions
+/// instead. An explicit `base_instructions` override (even an empty one)
+/// skips this fallback on purpose.
+fn ensure_catalog_instructions(model: &mut ModelInfo) {
+    let has_instruction_template = model
+        .model_messages
+        .as_ref()
+        .and_then(|messages| messages.instructions_template.as_deref())
+        .is_some_and(|template| !template.trim().is_empty());
+    if !has_instruction_template {
+        warn!(
+            model = %model.slug,
+            "model catalog omitted usable instructions; using built-in fallback"
+        );
+        model
+            .model_messages
+            .get_or_insert_default()
+            .instructions_template = Some(BASE_INSTRUCTIONS.to_string());
+    }
 }
 
 fn strip_personality_section(mut instructions: String) -> String {
