@@ -155,10 +155,12 @@ jobs:
           # coherent across Codex releases.
           git checkout "${upstream_tag}" -- \
             codex-rs/core/src/guardian/review.rs \
-            codex-rs/core/src/context/guardian_node_repl_policy.rs
+            codex-rs/core/src/context/guardian_node_repl_policy.rs \
+            codex-rs/core/src/session/step_activation.rs
           git add \
             codex-rs/core/src/guardian/review.rs \
-            codex-rs/core/src/context/guardian_node_repl_policy.rs
+            codex-rs/core/src/context/guardian_node_repl_policy.rs \
+            codex-rs/core/src/session/step_activation.rs
 
           # Adapt the source fork's model-catalog tests to newer upstream
           # ModelMessages fields without replacing the Termux/source-fork behavior patch.
