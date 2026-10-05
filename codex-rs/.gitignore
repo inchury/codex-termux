@@ -1,2 +1,5 @@
 /target/
 /target-*/
+
+# insta snapshot temp files (never commit)
+*.snap.new

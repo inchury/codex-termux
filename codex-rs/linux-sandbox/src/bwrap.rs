@@ -2360,8 +2360,9 @@ mod tests {
 
     #[test]
     fn non_utf8_daemon_socket_mask_path_is_rejected() {
-        let daemon_directory =
-            PathBuf::from(OsString::from_vec(b"/tmp/codex-daemon-\xff".to_vec()));
+        let daemon_directory = PathBuf::from(OsString::from_vec(
+            b"/tmp/codex-daemon-termux-\xff".to_vec(),
+        ));
         assert!(
             append_daemon_socket_masks(
                 &mut Vec::new(),

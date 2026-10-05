@@ -163,17 +163,19 @@ where
     B: Backend<Error = io::Error>,
     B: Write,
 {
-    #[allow(clippy::print_stderr)]
     fn drop(&mut self) {
         // Attempt to restore the cursor state
         if let Err(err) = self.reset_cursor_style() {
-            eprintln!("Failed to reset the cursor style: {err}");
+            let _ = writeln!(
+                io::stderr().lock(),
+                "Failed to reset the cursor style: {err}"
+            );
         }
 
         if self.hidden_cursor
             && let Err(err) = self.show_cursor()
         {
-            eprintln!("Failed to show the cursor: {err}");
+            let _ = writeln!(io::stderr().lock(), "Failed to show the cursor: {err}");
         }
     }
 }

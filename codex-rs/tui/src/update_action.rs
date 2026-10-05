@@ -10,19 +10,19 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
     Daemon(DaemonUpdateSource),
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g @mmmbuto/codex-cli-termux@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g @mmmbuto/codex-cli-termux@latest`.
     BunGlobalLatest,
-    /// Update via `vp install -g @openai/codex@latest`.
+    /// Update via `vp install -g @mmmbuto/codex-cli-termux@latest`.
     VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
+    /// Update via `pnpm add -g @mmmbuto/codex-cli-termux@latest`.
     PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
+    /// Redirect a detected Homebrew install to the supported fork npm package.
     BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Update standalone installs via `npm install -g @mmmbuto/codex-cli-termux@latest`.
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
+    /// Update standalone installs via `npm install -g @mmmbuto/codex-cli-termux@latest`.
     StandaloneWindows,
 }
 
@@ -46,27 +46,37 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::Daemon(source) => ("codex", source.command_args()),
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
+            // codex-termux fork: daemon self-update is disabled (the daemon
+            // update path fails closed in app-server-daemon). Route any daemon
+            // update request through the supported fork npm channel instead.
+            UpdateAction::Daemon(_) => (
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
             ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
+            UpdateAction::NpmGlobalLatest => (
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+            ),
+            UpdateAction::BunGlobalLatest => (
+                "bun",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+            ),
+            UpdateAction::VitePlusGlobalLatest => {
+                ("vp", &["install", "-g", "@mmmbuto/codex-cli-termux@latest"])
+            }
+            UpdateAction::PnpmGlobalLatest => {
+                ("pnpm", &["add", "-g", "@mmmbuto/codex-cli-termux@latest"])
+            }
+            // codex-termux fork: no Homebrew cask is shipped, so `brew upgrade
+            // --cask codex` would pull the UPSTREAM openai cask and replace the
+            // fork. Redirect to the supported npm channel, like Standalone*.
+            UpdateAction::BrewUpgrade => (
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+            ),
+            UpdateAction::StandaloneUnix | UpdateAction::StandaloneWindows => (
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
             ),
         }
     }
@@ -156,27 +166,26 @@ mod tests {
     }
 
     #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
+    fn standalone_update_commands_use_fork_package() {
         assert_eq!(
             UpdateAction::StandaloneUnix.command_args(),
             (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
             )
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
+            )
+        );
+        assert_eq!(
+            UpdateAction::BrewUpgrade.command_args(),
+            (
+                "npm",
+                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
             )
         );
     }

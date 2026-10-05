@@ -735,6 +735,14 @@ fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
         .map_err(|err| format!("failed to resolve socket path `{raw}`: {err}"))
 }
 
+fn report_fatal<W: Write>(writer: &mut W, message: &str) -> std::io::Result<()> {
+    writeln!(writer, "ERROR: {message}")
+}
+
+fn report_exit_message<W: Write>(writer: &mut W, line: &str) -> std::io::Result<()> {
+    writeln!(writer, "{line}")
+}
+
 /// Handle the app exit and print the results. Optionally run the update action.
 fn handle_app_exit(
     exit_info: AppExitInfo,
@@ -742,7 +750,7 @@ fn handle_app_exit(
 ) -> anyhow::Result<()> {
     let is_fatal = match &exit_info.exit_reason {
         ExitReason::Fatal(message) => {
-            eprintln!("ERROR: {message}");
+            let _ = report_fatal(&mut std::io::stderr().lock(), message);
             true
         }
         ExitReason::UserRequested
@@ -752,16 +760,22 @@ fn handle_app_exit(
     };
 
     let update_action = exit_info.update_action;
-    if !matches!(update_action, Some(UpdateAction::Daemon(_))) {
+    let reporting_result = if !matches!(update_action, Some(UpdateAction::Daemon(_))) {
         let color_enabled = supports_color::on(Stream::Stdout).is_some();
-        for line in exit_info.format_exit_messages(color_enabled) {
-            println!("{line}");
-        }
-    }
+        let mut stdout = std::io::stdout().lock();
+        exit_info
+            .format_exit_messages(color_enabled)
+            .into_iter()
+            .try_for_each(|line| report_exit_message(&mut stdout, &line))
+    } else {
+        Ok(())
+    };
     if is_fatal {
-        std::io::stdout().flush()?;
+        // Reporting failures must not replace the application's fatal exit status.
+        let _ = std::io::stdout().flush();
         std::process::exit(1);
     }
+    reporting_result?;
     if let Some(action) = update_action {
         run_update_action(action, cli_executable)?;
     }
@@ -2374,12 +2388,27 @@ fn read_remote_auth_token_from_env_var(env_var_name: &str) -> anyhow::Result<Str
     read_remote_auth_token_from_env_var_with(env_var_name, |name| std::env::var(name))
 }
 
+fn reject_unbound_cell_server(agents_overview: bool, remote: bool) -> Option<AppExitInfo> {
+    if codex_tui::has_nexuscrew_context() && (agents_overview || remote) {
+        Some(AppExitInfo::fatal(
+            "NexusCrew cell identity requires an embedded server; --remote and agents are unavailable until shared servers support per-connection identity binding.",
+        ))
+    } else {
+        None
+    }
+}
+
 async fn run_interactive_tui(
     mut interactive: TuiCli,
     remote: Option<String>,
     remote_auth_token_env: Option<String>,
     arg0_paths: Arg0DispatchPaths,
 ) -> std::io::Result<AppExitInfo> {
+    if let Some(exit_info) =
+        reject_unbound_cell_server(interactive.agents_overview, remote.is_some())
+    {
+        return Ok(exit_info);
+    }
     if interactive.no_daemon {
         if interactive.agents_overview {
             return Ok(AppExitInfo::fatal(
@@ -4907,3 +4936,51 @@ mod tests {
 #[cfg(all(test, unix))]
 #[path = "daemon_update_tests.rs"]
 mod daemon_update_tests;
+
+#[cfg(all(test, unix))]
+#[path = "exit_reporting_tests.rs"]
+mod exit_reporting_tests;
+
+#[cfg(test)]
+mod exit_reporting_writer_tests {
+    use super::report_exit_message;
+    use super::report_fatal;
+    use std::io;
+    use std::io::Write;
+
+    struct FailedWriter(io::Error);
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(self
+                .0
+                .raw_os_error()
+                .map(io::Error::from_raw_os_error)
+                .unwrap_or_else(|| io::Error::from(self.0.kind())))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn exit_reporters_preserve_messages_and_return_writer_failures() {
+        let mut healthy = Vec::new();
+        report_fatal(&mut healthy, "terminal task failed").expect("healthy writer");
+        report_exit_message(&mut healthy, "summary").expect("healthy writer");
+        assert_eq!(healthy, b"ERROR: terminal task failed\nsummary\n");
+        for error in [
+            io::Error::from(io::ErrorKind::BrokenPipe),
+            io::Error::from_raw_os_error(5),
+        ] {
+            let kind = error.kind();
+            let mut writer = FailedWriter(error);
+            assert_eq!(report_fatal(&mut writer, "fatal").unwrap_err().kind(), kind);
+            assert_eq!(
+                report_exit_message(&mut writer, "summary")
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+        }
+    }
+}

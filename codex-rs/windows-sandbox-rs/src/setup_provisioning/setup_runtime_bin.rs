@@ -209,3 +209,6 @@ fn local_app_data_root() -> Option<PathBuf> {
                 .map(|profile| profile.join("AppData").join("Local"))
         })
 }
+
+#[cfg(test)]
+mod setup_runtime_bin_tests;

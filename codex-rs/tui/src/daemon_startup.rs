@@ -37,6 +37,8 @@ pub(super) fn exclusion(
         Some("workload identity")
     } else if exec_server_url.is_some() {
         Some("executor selection (CODEX_EXEC_SERVER_URL)")
+    } else if has_nexuscrew_context() {
+        Some("NexusCrew cell context")
     } else if cli.agents_overview {
         None
     } else if cli.config_profile_v2.is_some() {

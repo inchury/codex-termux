@@ -60,7 +60,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
     for (running, local) in [(false, false), (true, false), (false, true), (true, true)] {
         let home = TempDir::new().unwrap();
         let (legacy, release) = manual_update_daemon(&home);
-        let root = home.path().join("packages/standalone");
+        let root = home.path().join("packages/app-server-daemon-termux");
         if local {
             let package = root.join("releases/local-development");
             std::fs::create_dir(&package).unwrap();
@@ -94,7 +94,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
         );
         assert_eq!(
             crate::managed_install::package_root(home.path()),
-            home.path().join("packages/standalone")
+            home.path().join("packages/app-server-daemon-termux")
         );
         let settings = format!(
             r#"{{"updater":{{"autoUpdateEnabled":{running}}},"remoteControlEnabled":true}}"#
@@ -147,7 +147,7 @@ printf '{release}' > "$root/auto-update-version"
         assert!(!dedicated.join("current").exists());
         assert_eq!(
             crate::managed_install::package_root(home.path()),
-            home.path().join("packages/standalone")
+            home.path().join("packages/app-server-daemon-termux")
         );
         assert_eq!(
             (
@@ -283,8 +283,12 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
         format!("{}-unknown-linux-musl", std::env::consts::ARCH)
     };
     let release = format!("1.0.0-{target}");
-    let standalone = home.path().join("packages/standalone");
-    let bin = standalone.join("releases").join(&release).join("codex");
+    let standalone = home.path().join("packages/app-server-daemon-termux");
+    let bin = standalone
+        .join("releases")
+        .join(&release)
+        .join("bin")
+        .join("codex");
     std::fs::create_dir_all(bin.parent().expect("binary parent")).expect("release directory");
     std::fs::write(
         &bin,
@@ -296,18 +300,18 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     std::os::unix::fs::symlink(format!("releases/{release}"), standalone.join("current"))
         .expect("current release");
     std::fs::write(standalone.join("auto-update-version"), &release).expect("latest marker");
-    let state = home.path().join("app-server-daemon");
+    let state = home.path().join("app-server-daemon-termux");
     std::fs::create_dir(&state).unwrap();
     std::fs::write(state.join("app-server.stderr.log"), b"").unwrap();
     (
         Daemon {
             log_diagnostics: false,
-            socket_path: home.path().join("app-server-control/server.sock"),
+            socket_path: home.path().join("app-server-control-termux/server.sock"),
             pid_file: state.join("app-server.pid"),
             update_pid_file: state.join("app-server-updater.pid"),
             operation_lock_file: state.join("daemon.lock"),
             settings_file: state.join("settings.json"),
-            managed_codex_bin: standalone.join("current/codex"),
+            managed_codex_bin: standalone.join("current/bin/codex"),
         },
         release,
     )
@@ -539,7 +543,7 @@ async fn test_control_server(
 #[cfg(unix)]
 #[tokio::test]
 async fn manual_update_restarts_managed_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("standalone").await;
+    check_manual_update_restart(false).await;
 }
 
 #[cfg(unix)]
@@ -689,20 +693,18 @@ async fn confirmed_feature_restart_preserves_ownership_and_skips_matching_settin
 #[cfg(unix)]
 #[tokio::test]
 async fn manual_update_restarts_local_daemon_with_automatic_updates_disabled() {
-    check_manual_update_restart("app-server-daemon").await;
+    check_manual_update_restart(true).await;
 }
 
 #[cfg(unix)]
-async fn check_manual_update_restart(package_directory: &str) {
+async fn check_manual_update_restart(local_package: bool) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
-    let local_package = package_directory == "app-server-daemon";
     let home = TempDir::new().expect("home");
     let (mut daemon, mut release) = manual_update_daemon(&home);
-    let standalone = home.path().join("packages").join(package_directory);
+    let standalone = home.path().join("packages/app-server-daemon-termux");
     if local_package {
-        std::fs::rename(home.path().join("packages/standalone"), &standalone).unwrap();
         let local = format!("local-development-{release}");
         std::fs::rename(
             standalone.join("releases").join(&release),
@@ -713,7 +715,7 @@ async fn check_manual_update_restart(package_directory: &str) {
         std::os::unix::fs::symlink(format!("releases/{local}"), standalone.join("current"))
             .unwrap();
         std::fs::remove_file(standalone.join("auto-update-version")).unwrap();
-        daemon.managed_codex_bin = standalone.join("current/codex");
+        daemon.managed_codex_bin = standalone.join("current/bin/codex");
         release = local;
     }
     let daemon = std::sync::Arc::new(daemon);
@@ -1033,4 +1035,26 @@ printf '%s' '{release}' > '{marker}'
             settings
         );
     }
+}
+
+/// The standalone auto-updater MUST stay disabled in the fork: the upstream
+/// installer would replace this binary and silently remove fork behavior.
+#[tokio::test]
+async fn install_latest_standalone_is_disabled_in_fork() {
+    let result = super::install_latest_standalone().await;
+    let error =
+        result.expect_err("standalone updates must fail closed without fetching an installer");
+    let message = format!("{error}");
+    assert!(
+        message.contains("codex-termux fork"),
+        "fork-disabled error must identify the fork: {message}"
+    );
+    assert!(
+        message.contains("disabled"),
+        "fork-disabled error must state that updates are disabled: {message}"
+    );
+    assert!(
+        message.contains("@mmmbuto/codex-cli-termux"),
+        "fork-disabled error must name the supported package: {message}"
+    );
 }

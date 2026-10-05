@@ -2,6 +2,7 @@ use super::*;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::hook_names::HookToolName;
 use codex_network_proxy::ManagedNetworkSandboxContext;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
 use codex_protocol::permissions::FileSystemSandboxEntry;
@@ -163,6 +164,8 @@ fn additional_permissions_allow_bypass_sandbox_first_attempt_when_execpolicy_ski
                 proposed_execpolicy_amendment: None,
             },
             &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ false,
         ),
         SandboxOverride::BypassSandboxFirstAttempt
     );
@@ -178,6 +181,8 @@ fn guardian_bypasses_sandbox_for_explicit_escalation_on_first_attempt() {
                 proposed_execpolicy_amendment: None,
             },
             &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ false,
         ),
         SandboxOverride::BypassSandboxFirstAttempt
     );
@@ -201,6 +206,8 @@ fn deny_read_blocks_explicit_escalation_and_policy_bypass() {
                 proposed_execpolicy_amendment: None,
             },
             &file_system_policy,
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ false,
         ),
         SandboxOverride::NoOverride,
         "explicit escalation would drop deny-read filesystem policy, so keep the first attempt sandboxed",
@@ -235,9 +242,187 @@ fn deny_read_blocks_explicit_escalation_and_policy_bypass() {
                 proposed_execpolicy_amendment: None,
             },
             &file_system_policy,
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ false,
         ),
         SandboxOverride::NoOverride,
         "exec-policy allow rules would drop deny-read filesystem policy, so keep the first attempt sandboxed",
+    );
+}
+
+// --- Platform without sandbox by construction (Android/Termux): issue #22 ---
+//
+// The tests DECLARE the platform branch explicitly (they do not depend on the
+// host they run on): `true` = the binary cannot contain a sandbox backend at
+// all (Android/Termux build), `false` = a platform that is expected to have
+// one, where a missing/broken sandbox must stay fail-closed.
+
+#[test]
+fn approved_needs_approval_bypasses_sandbox_on_platform_without_sandbox_by_construction() {
+    // Termux #22: assess_patch_safety turns "no platform sandbox" into
+    // AskUser; by the time the override runs the user has approved. Honoring
+    // that approval means the existing unsandboxed path (no sandbox request
+    // the executor would have to refuse).
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ true,
+            /*already_approved*/ true,
+        ),
+        SandboxOverride::BypassSandboxFirstAttempt,
+        "on a platform without any sandbox backend, an approved dialog must reach the unsandboxed path",
+    );
+}
+
+#[test]
+fn approved_needs_approval_keeps_sandbox_on_platform_expected_to_have_one() {
+    // The negative that guards the security boundary: on Linux/macOS/Windows
+    // an approved NeedsApproval does NOT drop the sandbox — the sandboxed
+    // first attempt runs, and a missing/broken sandbox stays fail-closed
+    // downstream (executor refuses, escalation flow handles it).
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ true,
+        ),
+        SandboxOverride::NoOverride,
+        "platforms expected to have a sandbox keep the sandboxed first attempt after approval",
+    );
+}
+
+#[test]
+fn by_construction_bypass_still_respects_denied_reads() {
+    // The by-construction bypass is gated behind unsandboxed_execution_allowed
+    // exactly like every other bypass: deny-read restrictions must survive.
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+        path: FileSystemPath::GlobPattern {
+            pattern: "**/*.env".to_string(),
+        },
+        access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
+    }]);
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &file_system_policy,
+            /*sandbox_unavailable_by_construction*/ true,
+            /*already_approved*/ true,
+        ),
+        SandboxOverride::NoOverride,
+        "by-construction bypass would drop deny-read filesystem policy, so keep the first attempt sandboxed",
+    );
+}
+
+#[test]
+fn by_construction_flag_alone_does_not_bypass_without_approval() {
+    // Only an APPROVED NeedsApproval bypasses: a Skip requirement on a
+    // by-construction platform keeps the ordinary override semantics.
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::Skip {
+                bypass_sandbox: false,
+                proposed_execpolicy_amendment: None,
+            },
+            &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ true,
+            /*already_approved*/ false,
+        ),
+        SandboxOverride::NoOverride,
+        "the platform flag alone must not bypass: an approval is required",
+    );
+}
+
+// --- The approval outcome must cross the override explicitly ---
+//
+// The override must not infer consent from being reached: the caller passes
+// the real dialog outcome (`already_approved`). These tests declare the
+// platform branch explicitly, like the ones above.
+
+#[test]
+fn unapproved_request_on_sandboxless_platform_stays_fail_closed() {
+    // A NeedsApproval whose dialog was denied or has not run yet must NOT
+    // bypass: the first attempt stays sandboxed and fail-closed downstream,
+    // even on a platform with no sandbox backend at all.
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ true,
+            /*already_approved*/ false,
+        ),
+        SandboxOverride::NoOverride,
+        "a denied or still-absent approval must keep the first attempt sandboxed",
+    );
+}
+
+#[test]
+fn deny_read_policy_never_bypasses_sandbox() {
+    // Pins the deny-read guard (the first condition of the override): denied
+    // reads only exist inside the sandbox, so even an EXPLICIT approval on a
+    // sandboxless platform must keep the first attempt sandboxed — a bypass
+    // would silently grant the denied reads.
+    let file_system_policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
+        path: FileSystemPath::GlobPattern {
+            pattern: "**/*.env".to_string(),
+        },
+        access: FileSystemAccessMode::Deny,
+        missing_path_behavior: None,
+    }]);
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &file_system_policy,
+            /*sandbox_unavailable_by_construction*/ true,
+            /*already_approved*/ true,
+        ),
+        SandboxOverride::NoOverride,
+        "deny-read restrictions must survive even an approved sandboxless-platform bypass",
+    );
+}
+
+#[test]
+fn linux_platform_keeps_sandboxed_first_attempt() {
+    // The platform branch is injected as false (Linux/macOS/Windows: the
+    // binary is expected to contain a sandbox backend): an approved
+    // NeedsApproval keeps the sandboxed first attempt, and a missing or
+    // broken sandbox stays fail-closed downstream.
+    assert_eq!(
+        sandbox_override_for_first_attempt(
+            SandboxPermissions::UseDefault,
+            &ExecApprovalRequirement::NeedsApproval {
+                reason: None,
+                proposed_execpolicy_amendment: None,
+            },
+            &FileSystemSandboxPolicy::default(),
+            /*sandbox_unavailable_by_construction*/ false,
+            /*already_approved*/ true,
+        ),
+        SandboxOverride::NoOverride,
+        "platforms expected to have a sandbox keep the sandboxed first attempt even after approval",
     );
 }
 
@@ -417,6 +602,7 @@ fn exec_server_env_keeps_command_native_and_carries_sandbox_context() {
             },
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: false,
+            sandbox_unavailable_by_construction: false,
         })
     );
     assert!(request.exec_server_enforce_managed_network);
@@ -440,4 +626,36 @@ fn exec_server_env_keeps_command_native_and_carries_sandbox_context() {
     attempt.exec_server_permissions = &full_access;
     attempt.enforce_managed_network = false;
     assert!(!attempt.is_escalated(), "full access is not an escalation");
+}
+
+// --- Audit gate R1 (#22): the REAL default configuration, not a fixture ---
+
+#[test]
+fn r1_default_configuration_allows_the_approved_unsandboxed_path() {
+    // The CLI defaults when the user configures nothing (the Termux npm
+    // package ships no config of its own): a workspace-write permission
+    // profile — projected exactly the way the session does it for the turn
+    // environment — and the `#[default] OnRequest` approval policy. Measure
+    // the gate the approved-unsandboxed path depends on.
+    let cwd =
+        AbsolutePathBuf::try_from(std::env::temp_dir().as_path()).expect("temp dir is absolute");
+    let profile = PermissionProfile::workspace_write()
+        .materialize_project_roots_with_workspace_roots(std::slice::from_ref(&cwd));
+    let fs_policy = profile.file_system_sandbox_policy();
+    let approval = AskForApproval::default();
+    println!("R1 permission_profile = workspace_write (default CLI sandbox policy)");
+    println!("R1 fs_policy.kind = {:?}", fs_policy.kind);
+    println!(
+        "R1 fs_policy.has_denied_read_restrictions = {}",
+        fs_policy.has_denied_read_restrictions()
+    );
+    println!(
+        "R1 unsandboxed_execution_allowed = {}",
+        unsandboxed_execution_allowed(&fs_policy)
+    );
+    println!("R1 default AskForApproval = {approval:?} (not sandbox-rejecting)");
+    assert!(
+        unsandboxed_execution_allowed(&fs_policy),
+        "R1: the default configuration must allow the approved unsandboxed path — otherwise the fix does not close the issue"
+    );
 }

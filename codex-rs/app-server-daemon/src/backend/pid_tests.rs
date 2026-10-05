@@ -923,3 +923,186 @@ fn inaccessible_pid_preserves_identity_check_error() {
     .join()
     .expect("anonymous identity check");
 }
+
+#[test]
+fn proc_stat_details_handle_parentheses_and_zombies() {
+    for state in ["S", "Z"] {
+        let stat = format!(
+            "42 (worker (with) spaces)) {state} 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 123456 0 0"
+        );
+        assert_eq!(
+            super::parse_proc_stat_details(&stat, /*pid*/ 42).unwrap(),
+            (state.to_string(), "123456".to_string())
+        );
+    }
+}
+
+#[test]
+fn proc_stat_details_reject_truncated_records() {
+    for stat in ["", "42 (worker", "42 (worker) S 1 2"] {
+        assert!(super::parse_proc_stat_details(stat, /*pid*/ 42).is_err());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn recorded_start_time_matches_live_process() {
+    let pid = std::process::id();
+    let record = PidRecord {
+        pid,
+        process_start_time: read_process_start_time(pid).await.expect("start time"),
+        process_identity: None,
+        executable_identity: None,
+    };
+    assert!(
+        super::process_matches_record(&record)
+            .await
+            .expect("verify process")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pid_probe_verdict_covers_all_outcomes() {
+    use super::DetailsOutcome;
+    use super::KillProbe;
+    use super::ProbeVerdict;
+    use super::classify_probe;
+
+    let cases = [
+        (KillProbe::Gone, DetailsOutcome::Read, ProbeVerdict::Stale),
+        (
+            KillProbe::Gone,
+            DetailsOutcome::NotFound,
+            ProbeVerdict::Stale,
+        ),
+        (
+            KillProbe::Gone,
+            DetailsOutcome::PermissionDenied,
+            ProbeVerdict::Stale,
+        ),
+        (KillProbe::Gone, DetailsOutcome::Other, ProbeVerdict::Stale),
+        (KillProbe::Alive, DetailsOutcome::Read, ProbeVerdict::Active),
+        (
+            KillProbe::Foreign,
+            DetailsOutcome::Read,
+            ProbeVerdict::Active,
+        ),
+        (
+            KillProbe::Alive,
+            DetailsOutcome::NotFound,
+            ProbeVerdict::Propagate,
+        ),
+        (
+            KillProbe::Alive,
+            DetailsOutcome::PermissionDenied,
+            ProbeVerdict::Propagate,
+        ),
+        (
+            KillProbe::Alive,
+            DetailsOutcome::Other,
+            ProbeVerdict::Propagate,
+        ),
+        (
+            KillProbe::Foreign,
+            DetailsOutcome::NotFound,
+            ProbeVerdict::Stale,
+        ),
+        (
+            KillProbe::Foreign,
+            DetailsOutcome::PermissionDenied,
+            ProbeVerdict::Stale,
+        ),
+        (
+            KillProbe::Foreign,
+            DetailsOutcome::Other,
+            ProbeVerdict::Propagate,
+        ),
+    ];
+    for (probe, details, expected) in cases {
+        assert_eq!(
+            classify_probe(probe, details),
+            expected,
+            "probe={probe:?} details={details:?}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn details_outcome_sees_io_error_kinds_through_context() {
+    use anyhow::Context as _;
+
+    let not_found = tokio::fs::read_to_string("/proc/0/stat")
+        .await
+        .context("failed to read /proc/0/stat")
+        .expect_err("pid 0 has no stat file");
+    assert_eq!(
+        super::details_outcome(&not_found),
+        super::DetailsOutcome::NotFound
+    );
+
+    let denied = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        .context("failed to read /proc/1/stat");
+    assert_eq!(
+        super::details_outcome(&denied),
+        super::DetailsOutcome::PermissionDenied
+    );
+
+    let other = anyhow::anyhow!("legacy start time changed for pid 42");
+    assert_eq!(super::details_outcome(&other), super::DetailsOutcome::Other);
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test]
+async fn process_matches_record_treats_vanished_pid_as_stale() {
+    let pid_max = tokio::fs::read_to_string("/proc/sys/kernel/pid_max")
+        .await
+        .expect("read pid_max")
+        .trim()
+        .parse::<u32>()
+        .expect("parse pid_max");
+    let record = PidRecord {
+        pid: pid_max + 1,
+        process_start_time: "stale".to_string(),
+        process_identity: None,
+        executable_identity: None,
+    };
+    assert!(
+        !super::process_matches_record(&record)
+            .await
+            .expect("vanished pid probe")
+    );
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[tokio::test]
+async fn vanishing_process_stays_stale_when_the_details_read_fails() {
+    use super::KillProbe;
+
+    let pid_max = tokio::fs::read_to_string("/proc/sys/kernel/pid_max")
+        .await
+        .expect("read pid_max")
+        .trim()
+        .parse::<u32>()
+        .expect("parse pid_max");
+    let record = PidRecord {
+        pid: pid_max + 1,
+        process_start_time: "stale".to_string(),
+        process_identity: None,
+        executable_identity: None,
+    };
+    // The daemon answers the first probe and disappears before the details
+    // read; the failed read must re-probe and see the process gone.
+    let mut probes = [KillProbe::Alive, KillProbe::Gone].into_iter();
+    let mut calls = 0;
+    let probe = || {
+        calls += 1;
+        probes.next().unwrap_or(KillProbe::Gone)
+    };
+    let matches = super::process_matches_record_with_probe(&record, probe)
+        .await
+        .expect("vanishing probe");
+    assert_eq!(calls, 2, "the failed read must re-probe the process");
+    assert!(!matches);
+}

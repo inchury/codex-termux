@@ -13,6 +13,11 @@ pub(super) async fn run_main_inner(
     loader_overrides: LoaderOverrides,
     explicit_remote_endpoint: Option<RemoteAppServerEndpoint>,
 ) -> std::io::Result<AppExitInfo> {
+    if has_nexuscrew_context() && (explicit_remote_endpoint.is_some() || cli.agents_overview) {
+        return Err(std::io::Error::other(
+            "NexusCrew cell identity requires an embedded server; --remote and agents are unavailable until shared servers support per-connection identity binding.",
+        ));
+    }
     if cli.no_daemon && explicit_remote_endpoint.is_some() {
         return Err(std::io::Error::other(
             "--no-daemon cannot be used with --remote.",

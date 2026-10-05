@@ -310,6 +310,7 @@ async fn update_once(
     terminate: &mut Signal,
     trigger: UpdateTrigger<'_>,
 ) -> Result<(UpdateLoopControl, Option<RestartIfRunningOutcome>)> {
+    install_latest_standalone().await?;
     if trigger == UpdateTrigger::Scheduled
         && !UpdaterSettings::load(&daemon.settings_file)
             .await?
@@ -707,4 +708,14 @@ impl Signal {
         let _ = codex_app_server_transport::daemon_shutdown_signal().await;
         Some(())
     }
+}
+
+/// The fork has no owned standalone installer. Returning before any HTTP
+/// work guarantees that the upstream script cannot replace this binary.
+async fn install_latest_standalone() -> Result<()> {
+    anyhow::bail!(
+        "codex-termux fork: standalone auto-updater is disabled. The fork does \
+         not fetch the upstream openai/codex install script. To update the \
+         fork, run: npm install -g @mmmbuto/codex-cli-termux@latest"
+    )
 }

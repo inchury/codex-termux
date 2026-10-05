@@ -53,7 +53,9 @@ const DAEMON_PID_FILE_NAME: &str = "daemon.pid";
 const DAEMON_UPDATE_PID_FILE_NAME: &str = "daemon-updater.pid";
 const OPERATION_LOCK_FILE_NAME: &str = "daemon.lock";
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const STATE_DIR_NAME: &str = "app-server-daemon";
+// codex-termux fork (L2): dedicated state namespace so pid/lock/settings/logs of
+// this daemon never mix with the upstream daemon's (or the other fork's).
+const STATE_DIR_NAME: &str = "app-server-daemon-termux";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleCommand {
@@ -259,10 +261,25 @@ pub async fn enable_remote_control_on_socket(
     .await
 }
 
+/// Pairing attaches to a daemon that is already up; unlike `remote-control start`
+/// it never starts one. When nothing is listening, the transport error only names
+/// a socket path, which tells the user nothing about what to do next.
+fn ensure_pairing_daemon_socket(socket_path: &Path) -> Result<()> {
+    if socket_path.exists() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "no app-server is listening at {}. Pairing attaches to a running daemon and \
+         does not start one: run `remote-control start` first, then pair again.",
+        socket_path.display()
+    ))
+}
+
 /// Starts a manual pairing session through an already-running daemon app-server.
 pub async fn start_remote_control_pairing() -> Result<RemoteControlPairingStartResponse> {
     ensure_supported_platform()?;
     let daemon = Daemon::from_environment()?;
+    ensure_pairing_daemon_socket(&daemon.socket_path)?;
     remote_control_client::start_pairing(&daemon.socket_path).await
 }
 
@@ -284,12 +301,16 @@ pub async fn run_pid_update_loop(
 }
 
 pub async fn update(
-    http_client_factory: codex_http_client::HttpClientFactory,
+    _http_client_factory: codex_http_client::HttpClientFactory,
 ) -> Result<UpdateOutput> {
     ensure_supported_platform()?;
     #[cfg(windows)]
     backend::windows::ensure_not_elevated()?;
-    update_loop::request_manual_update(&Daemon::from_environment()?, http_client_factory).await
+    // Fork (codex-termux): no in-place daemon self-update. The fork updates
+    // through the npm channel; the upstream standalone installer is absent.
+    Err(anyhow!(
+        "the codex-termux daemon does not self-update; update with `npm install -g @mmmbuto/codex-cli-termux@latest` and restart the daemon"
+    ))
 }
 
 #[cfg(any(unix, windows))]
@@ -817,13 +838,20 @@ impl Daemon {
 
         let backend = backend::pid_backend(managed.backend_paths(&settings));
         backend.start().await?;
+        // Fork (codex-termux): stop any leftover upstream update-loop process
+        // before bootstrapping — the daemon never carries a running updater.
+        let updater = backend::pid_update_loop_backend(self.backend_paths(&settings));
+        if updater.is_starting_or_running().await? {
+            updater.stop().await?;
+        }
+
         let info = self.wait_until_ready().await?;
         let auto_update_enabled = managed.ensure_managed_updater(&settings).await?;
         let managed_codex_version = managed.managed_codex_version_best_effort().await;
         Ok(BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
-            auto_update_enabled,
+            auto_update_enabled: false,
             remote_control_enabled: settings.remote_control_enabled,
             managed_codex_path: managed.managed_codex_bin,
             managed_codex_version,
@@ -866,43 +894,14 @@ impl Daemon {
         backend.start().await
     }
 
+    // Fork (codex-termux): the upstream daemon self-update loop is disabled by
+    // design — updates travel through the fork npm channel
+    // (@mmmbuto/codex-cli-termux). Whatever the settings say, the updater is
+    // never started; any leftover updater process is stopped instead.
     async fn ensure_managed_updater(&self, settings: &DaemonSettings) -> Result<bool> {
         let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
-        if !settings.auto_update_enabled {
-            updater.stop().await?;
-            return Ok(false);
-        }
-        if !self.is_stable_standalone_release()? {
-            // An installer publishes current and the latest marker separately.
-            // Keep its updater alive while that publication may be in progress.
-            if !self.has_latest_selection_marker() {
-                updater.stop().await?;
-            }
-            return Ok(false);
-        }
-        let Ok(codex_bin) =
-            managed_install::resolved_managed_codex_bin(&self.managed_codex_bin).await
-        else {
-            if !self.has_latest_selection_marker() {
-                updater.stop().await?;
-            }
-            return Ok(false);
-        };
-        if !managed_install::supports_daemon_update_loop(&codex_bin).await
-            || !self.is_stable_standalone_release()?
-            || !managed_install::resolved_managed_codex_bin(&self.managed_codex_bin)
-                .await
-                .is_ok_and(|selected| selected == codex_bin)
-        {
-            if !self.has_latest_selection_marker() {
-                updater.stop().await?;
-            }
-            return Ok(false);
-        }
-        backend::pid_update_loop_backend(self.backend_paths_with_bin(settings, &codex_bin))
-            .start()
-            .await?;
-        Ok(true)
+        updater.stop().await?;
+        Ok(false)
     }
 
     fn is_stable_standalone_release(&self) -> Result<bool> {
@@ -939,26 +938,28 @@ impl Daemon {
     }
 
     async fn is_bootstrapped(&self, settings: &DaemonSettings) -> Result<bool> {
-        if !settings.auto_update_enabled
-            || !self.is_stable_standalone_release()?
-            || !managed_install::supports_daemon_update_loop(&self.managed_codex_bin).await
-        {
-            return Ok(self.running_backend_instance(settings).await?.is_some());
-        }
-        let updater = backend::pid_update_loop_backend(self.backend_paths(settings));
-        updater.is_starting_or_running().await
+        // Fork (codex-termux): no upstream update loop to probe — bootstrap
+        // state is just a running backend instance.
+        Ok(self.running_backend_instance(settings).await?.is_some())
     }
 
     fn ensure_managed_codex_bin(&self) -> Result<()> {
         if self.managed_codex_bin.is_file() {
             #[cfg(windows)]
             backend::windows::ensure_detached_launch(&self.managed_codex_bin)?;
+            // codex-termux fork (L1): never execute a managed binary staged by
+            // upstream (or the other fork) instead of our own selection.
+            managed_install::ensure_selected_variant_is_fork(&self.managed_codex_bin)?;
             return Ok(());
         }
 
         let managed_codex_path = self.managed_codex_bin.display();
         Err(anyhow!(
-            "daemon executable not found at {managed_codex_path}; repair the existing installation, or run `codex app-server daemon start` to install a missing daemon"
+            "managed Codex Termux install not found at {managed_codex_path}\n\n\
+             This command requires the managed install path used by the Termux package, because \
+             the daemon starts app-server from that fixed path.\n\n\
+             Install or update it with:\n  npm install -g @mmmbuto/codex-cli-termux@latest\n\n\
+             Then rerun the command you just tried."
         ))
     }
 
@@ -1127,6 +1128,22 @@ fn try_lock_file(file: &tokio::fs::File) -> Result<bool> {
     if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
         return Ok(false);
     }
+    // Some Android/Termux storage backends
+    // (e.g. certain f2fs / tmpfs mounts under `/data/data/com.termux`)
+    // reject `flock(2)` with ENOTSUP / EOPNOTSUPP, surfacing the cryptic
+    // "lock() not supported" error path that aborted `codex remote-control`
+    // before the daemon could even bind its socket. The fork already
+    // tolerates this same ENOTSUP class on other lockfiles (see
+    // `core::installation_id::is_unsupported_file_lock_error`); apply the
+    // same permissive degradation here so the daemon proceeds without
+    // exclusion. The pid file race that the lock guards is best-effort on
+    // these platforms — losing it is acceptable; refusing to start is not.
+    if err.kind() == std::io::ErrorKind::Unsupported
+        || err.raw_os_error() == Some(libc::ENOTSUP)
+        || err.raw_os_error() == Some(libc::EOPNOTSUPP)
+    {
+        return Ok(true);
+    }
     Err(err).context("failed to lock daemon operation")
 }
 
@@ -1150,10 +1167,33 @@ mod tests {
     use super::RemoteControlStatus;
     use super::RestartDecision;
     use super::RestartMode;
+    use super::ensure_pairing_daemon_socket;
     use super::restart_decision;
     use crate::client::ProbeInfo;
     #[cfg(unix)]
     use crate::settings::DaemonSettings;
+
+    #[test]
+    fn pairing_without_a_running_daemon_says_how_to_start_one() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let socket_path = temp_dir.path().join("app-server-control.sock");
+
+        let error = ensure_pairing_daemon_socket(&socket_path)
+            .expect_err("pairing must refuse when no daemon socket exists");
+        let message = error.to_string();
+        assert!(
+            message.contains("remote-control start"),
+            "the error must name the command that fixes it, got: {message}"
+        );
+        assert!(
+            message.contains(&socket_path.display().to_string()),
+            "the error must name the socket it looked for, got: {message}"
+        );
+
+        std::fs::write(&socket_path, b"").expect("create socket placeholder");
+        ensure_pairing_daemon_socket(&socket_path)
+            .expect("pairing must proceed once something is listening");
+    }
 
     #[test]
     fn remote_control_status_uses_camel_case_json() {
@@ -1231,7 +1271,7 @@ mod tests {
         let bootstrap_output = BootstrapOutput {
             status: BootstrapStatus::Bootstrapped,
             backend: BackendKind::Pid,
-            auto_update_enabled: true,
+            auto_update_enabled: false,
             remote_control_enabled: true,
             managed_codex_path: "codex".into(),
             managed_codex_version: Some("1.2.3".to_string()),
@@ -1246,7 +1286,7 @@ mod tests {
             serde_json::json!({
                 "status": "bootstrapped",
                 "backend": "pid",
-                "autoUpdateEnabled": true,
+                "autoUpdateEnabled": false,
                 "remoteControlEnabled": true,
                 "managedCodexPath": "codex",
                 "managedCodexVersion": "1.2.3",

@@ -311,12 +311,33 @@ impl PtyCodex {
         )
     }
 
+    pub(super) fn start_cli_with_env(
+        repo_root: &Path,
+        codex_home: TempDir,
+        extra_args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self> {
+        let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+        Self::start_binary_with_env(&codex, repo_root, codex_home, extra_args, None, extra_env)
+    }
+
     fn start_binary(
         codex: &Path,
         repo_root: &Path,
         codex_home: TempDir,
         extra_args: &[&str],
         editor: Option<&Path>,
+    ) -> Result<Self> {
+        Self::start_binary_with_env(codex, repo_root, codex_home, extra_args, editor, &[])
+    }
+
+    fn start_binary_with_env(
+        codex: &Path,
+        repo_root: &Path,
+        codex_home: TempDir,
+        extra_args: &[&str],
+        editor: Option<&Path>,
+        extra_env: &[(&str, &str)],
     ) -> Result<Self> {
         let mut master_fd = -1;
         let mut slave_fd = -1;
@@ -369,6 +390,7 @@ impl PtyCodex {
             .stdin(stdin)
             .stdout(stdout)
             .stderr(slave)
+            .envs(extra_env.iter().copied())
             .spawn()
             .context("start Codex in focus-test pseudo-terminal")?;
 
@@ -438,7 +460,7 @@ impl PtyCodex {
         );
     }
 
-    fn answer_startup_queries(&mut self) -> Result<()> {
+    pub(super) fn answer_startup_queries(&mut self) -> Result<()> {
         if !self.cursor_answered && contains_bytes(&self.output, b"\x1b[6n") {
             self.write_input(b"\x1b[1;1R")?;
             self.cursor_answered = true;

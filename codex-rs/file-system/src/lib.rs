@@ -366,6 +366,14 @@ pub struct FileSystemSandboxContext {
     pub windows_sandbox_proxy_settings_mode: Option<WindowsSandboxProxySettingsMode>,
     #[serde(default)]
     pub use_legacy_landlock: bool,
+    /// Whether the executing platform cannot provide any filesystem sandbox
+    /// backend at all (Android/Termux builds). Read-only operations may fall
+    /// back to unsandboxed host reads while this is set and the active policy
+    /// has no denied-read restrictions, which the sandbox is the sole
+    /// mechanism to enforce. Set from the compile-time platform predicate by
+    /// the constructors; tests inject it explicitly.
+    #[serde(default)]
+    pub sandbox_unavailable_by_construction: bool,
 }
 
 impl FileSystemSandboxContext {
@@ -399,7 +407,25 @@ impl FileSystemSandboxContext {
             windows_sandbox_selection: WindowsSandboxSelection::Disabled,
             windows_sandbox_proxy_settings_mode: None,
             use_legacy_landlock: false,
+            sandbox_unavailable_by_construction: cfg!(target_os = "android"),
         }
+    }
+
+    /// True when read-only operations may fall back to the unsandboxed host
+    /// path instead of the sandboxed backend: only on platforms where no
+    /// sandbox backend can exist, and only while the active policy has no
+    /// denied-read restrictions. Mirrors the defensive conversion of
+    /// [`Self::should_run_in_sandbox`]: a profile that cannot be interpreted
+    /// locally keeps the sandboxed routing.
+    pub fn unsandboxed_read_fallback_allowed(&self) -> bool {
+        // The context carries the resolved PermissionProfile, so the policy is
+        // always interpretable here; the denied-read check reads it directly
+        // (mirrors upstream should_read_from_sandbox's direct access).
+        self.sandbox_unavailable_by_construction
+            && !self
+                .permissions
+                .file_system_sandbox_policy()
+                .has_denied_read_restrictions()
     }
 
     /// Whether filesystem reads need a platform sandbox on the selected executor.
@@ -500,6 +526,9 @@ impl From<FileSystemSandboxContext> for WireFileSystemSandboxContext {
             windows_sandbox_selection,
             windows_sandbox_proxy_settings_mode,
             use_legacy_landlock,
+            // Platform property of the executing host, not of the sending
+            // client: the executor recomputes it in into_context.
+            sandbox_unavailable_by_construction: _,
         } = sandbox;
         let permissions = ExecPermissionProfile::from(permissions);
         // Older filesystem clients sent cwd and roots only when permissions needed them; old
@@ -590,6 +619,7 @@ impl WireFileSystemSandboxContext {
             windows_sandbox_selection: self.windows_sandbox_selection,
             windows_sandbox_proxy_settings_mode: self.windows_sandbox_proxy_settings_mode,
             use_legacy_landlock: self.use_legacy_landlock,
+            sandbox_unavailable_by_construction: cfg!(target_os = "android"),
         }
     }
 }

@@ -2066,15 +2066,19 @@ async fn run_ratatui_app(
     app_result
 }
 
-#[expect(
-    clippy::print_stderr,
-    reason = "TUI should no longer be displayed, so we can write to stderr."
-)]
+fn report_restore_failure<W: std::io::Write>(
+    writer: &mut W,
+    err: &std::io::Error,
+) -> std::io::Result<()> {
+    writeln!(
+        writer,
+        "failed to restore terminal. Run `reset` or restart your terminal to recover: {err}"
+    )
+}
+
 fn restore() {
     if let Err(err) = tui::restore_after_exit() {
-        eprintln!(
-            "failed to restore terminal. Run `reset` or restart your terminal to recover: {err}"
-        );
+        let _ = report_restore_failure(&mut std::io::stderr().lock(), &err);
     }
 }
 
@@ -2323,6 +2327,13 @@ fn should_show_bedrock_setup_wizard(
 }
 
 mod daemon_recovery;
+/// Whether this launch declares a cell isolation context (not an identity grant).
+pub fn has_nexuscrew_context() -> bool {
+    // These are isolation signals, not identity grants or proof of a valid FD protocol.
+    std::env::var_os("NEXUSCREW_MCP_SESSION").is_some_and(|value| !value.is_empty())
+        || std::env::var_os("NEXUSCREW_IDENTITY_FD").is_some()
+}
+
 mod daemon_startup;
 mod daemon_telemetry;
 
@@ -3996,5 +4007,57 @@ trust_level = "untrusted"
             "warning should reference the final config's theme name"
         );
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "terminal_restore_tests.rs"]
+mod terminal_restore_tests;
+
+#[cfg(test)]
+mod restore_reporting_writer_tests {
+    use super::report_restore_failure;
+    use std::io;
+    use std::io::Write;
+
+    struct FailedWriter(io::ErrorKind);
+    impl Write for FailedWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restore_report_preserves_message_and_returns_writer_failures() {
+        let error = io::Error::other("terminal disconnected");
+        let mut healthy = Vec::new();
+        report_restore_failure(&mut healthy, &error).expect("healthy writer");
+        assert_eq!(healthy, b"failed to restore terminal. Run `reset` or restart your terminal to recover: terminal disconnected\n");
+        for kind in [io::ErrorKind::BrokenPipe, io::ErrorKind::Other] {
+            assert_eq!(
+                report_restore_failure(&mut FailedWriter(kind), &error)
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+        }
+        struct EioWriter;
+        impl Write for EioWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from_raw_os_error(5))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            report_restore_failure(&mut EioWriter, &error)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(5)
+        );
     }
 }
