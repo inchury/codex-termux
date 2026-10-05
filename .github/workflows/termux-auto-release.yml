@@ -171,19 +171,37 @@ jobs:
           tests = test_path.read_text()
 
           if "pub content_filter_guidance: Option<String>" in protocol:
-              pattern = re.compile(r"(ModelMessages\s*\{\n)([ \t]*)")
-              def add_field(match):
-                  start = match.end()
-                  nearby = tests[start:start + 300]
-                  if "content_filter_guidance:" in nearby:
-                      return match.group(0)
-                  indent = match.group(2)
-                  return match.group(1) + indent + "content_filter_guidance: None,\n" + indent
+              pattern = re.compile(r"ModelMessages\\s*\\{")
+              inserts = []
+              for match in pattern.finditer(tests):
+                  brace = tests.find("{", match.start())
+                  depth = 0
+                  end = None
+                  for pos in range(brace, len(tests)):
+                      if tests[pos] == "{":
+                          depth += 1
+                      elif tests[pos] == "}":
+                          depth -= 1
+                          if depth == 0:
+                              end = pos
+                              break
+                  if end is None:
+                      raise RuntimeError("unterminated ModelMessages initializer")
+                  block = tests[brace:end + 1]
+                  if "content_filter_guidance:" in block:
+                      continue
+                  line_end = tests.find("\n", brace)
+                  if line_end == -1:
+                      raise RuntimeError("ModelMessages initializer has no body")
+                  indent = re.match(r"[ \\t]*", tests[line_end + 1:]).group(0)
+                  inserts.append((line_end + 1, indent + "content_filter_guidance: None,\\n"))
 
-              updated = pattern.sub(add_field, tests)
+              updated = tests
+              for pos, value in reversed(inserts):
+                  updated = updated[:pos] + value + updated[pos:]
               if updated != tests:
                   test_path.write_text(updated)
-                  print("Adapted ModelMessages test initializers for content_filter_guidance")
+                  print(f"Adapted {len(inserts)} ModelMessages test initializer(s) for content_filter_guidance")
           PY
           git add codex-rs/models-manager/src/model_info_tests.rs
 
