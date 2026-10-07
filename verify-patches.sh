@@ -472,6 +472,8 @@ else
 fi
 
 printf "Patch #26 (Model Catalog Instruction Fallback): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "not an Android/Termux compatibility patch"
 # 0.156 moved instruction rendering to `prompts::render_model_instructions`
 # (an `unwrap_or_default`), so a custom catalog entry without a usable
 # instructions template would render empty. The fork keeps its
@@ -492,6 +494,7 @@ elif cargo test --manifest-path codex-rs/Cargo.toml -p codex-models-manager --li
 else
   fail
 fi
+fi
 
 printf "Patch #27 (Pairing Names The Daemon Command): "
 if grep -q 'fn ensure_pairing_daemon_socket' codex-rs/app-server-daemon/src/lib.rs \
@@ -504,6 +507,9 @@ else
 fi
 
 printf "Patch #28 (musl ripgrep in the musl aarch64 payload): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "Linux musl packaging is outside the Android/Termux release"
+else
 # Version-agnostic on purpose: anchoring this to a ripgrep version would go stale at the
 # next bump and quietly stop guarding. What must never come back is the gnu artifact in a
 # manifest whose consumers are musl targets — a merge that takes upstream's file restores
@@ -513,6 +519,7 @@ if ! grep -q 'aarch64-unknown-linux-gnu' scripts/codex_package/rg \
   pass
 else
   fail
+fi
 fi
 
 printf "Patch #29 (advisory locks degrade where the filesystem lacks them): "
