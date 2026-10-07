@@ -167,6 +167,7 @@ jobs:
             README.md \
             docs/install.md \
             npm-package/README.md \
+            npm-package/tests \
             BUILDING.md \
             LICENSE \
             NOTICE \
