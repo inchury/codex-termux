@@ -165,6 +165,9 @@ else
 fi
 
 printf "Patch #13 (Fork-safe Managed Updates): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "fork distribution policy is maintained separately from Android runtime compatibility"
+else
 # Termux re-anchor: upstream moved the updater into a full loop with an
 # INSTALL_URL constant. The fork guard is now fail-closed at runtime (the
 # standalone installer refuses with a fork-named error and the daemon update
@@ -185,7 +188,12 @@ else
   fail
 fi
 
+fi
+
 printf "Patch #14 (Fork-owned Public Install Surfaces): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "fork distribution policy is maintained separately from Android runtime compatibility"
+else
 if grep -q "DioNanos/codex-termux" scripts/install/install.sh \
   && grep -q "DioNanos/codex-termux" scripts/install/install.ps1 \
   && grep -q "DioNanos/codex-termux" scripts/stage_npm_packages.py \
@@ -196,7 +204,12 @@ else
   fail
 fi
 
+fi
+
 printf "Patch #15 (Fork-owned Feedback Surfaces): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "fork distribution policy is maintained separately from Android runtime compatibility"
+else
 if grep -q "DioNanos/codex-termux/issues/new" codex-rs/tui/src/bottom_pane/feedback_view.rs \
   && grep -q "DioNanos/codex-termux/main/announcement_tip.toml" codex-rs/tui/src/tooltips.rs \
   && grep -q "github.com/DioNanos/codex-termux/releases/latest" announcement_tip.toml \
@@ -208,6 +221,8 @@ if grep -q "DioNanos/codex-termux/issues/new" codex-rs/tui/src/bottom_pane/feedb
   pass
 else
   fail
+fi
+
 fi
 
 printf "Patch #16 (Android Remote-Control Daemon): "
