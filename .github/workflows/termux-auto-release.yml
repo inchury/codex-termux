@@ -127,6 +127,7 @@ jobs:
             codex-rs/cli/src/remote_control_cmd.rs
             codex-rs/arg0/src/lib.rs
             codex-rs/core/src/installation_id.rs
+            codex-rs/rollout/src/writer_lock.rs
             codex-rs/utils/pty/src/pty.rs
             codex-rs/app-server-transport/src/transport/unix_socket.rs
             codex-rs/message-history/src/lib.rs
@@ -163,6 +164,14 @@ jobs:
           # not inherited from the historical source release.
           git checkout origin/main -- \
             npm-package/package.json \
+            README.md \
+            docs/install.md \
+            npm-package/README.md \
+            BUILDING.md \
+            LICENSE \
+            NOTICE \
+            npm-package/LICENSE \
+            npm-package/NOTICE \
             verify-patches.sh \
             patches/README.md \
             scripts/fetch_rusty_v8_android.py \
@@ -177,6 +186,14 @@ jobs:
           git checkout origin/main -- .github/workflows
           git add \
             npm-package/package.json \
+            README.md \
+            docs/install.md \
+            npm-package/README.md \
+            BUILDING.md \
+            LICENSE \
+            NOTICE \
+            npm-package/LICENSE \
+            npm-package/NOTICE \
             verify-patches.sh \
             patches/README.md \
             scripts/fetch_rusty_v8_android.py \
@@ -258,7 +275,7 @@ jobs:
 
           # Validate the compatibility contract before spending runner time on
           # the Android build. Cargo-backed checks remain enabled here.
-          CODEX_PUBLIC_SANITIZED_TREE=1 bash verify-patches.sh
+          CODEX_PUBLIC_SANITIZED_TREE=1 TERMUX_AUTOPORT_RUNTIME_ONLY=1 bash verify-patches.sh
 
           git commit --allow-empty -m "chore(termux): port ${termux_source_tag} delta to ${upstream_tag}"
 
