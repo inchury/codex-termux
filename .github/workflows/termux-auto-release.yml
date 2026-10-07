@@ -102,7 +102,7 @@ jobs:
 
           git fetch --force --no-tags upstream             "refs/tags/${termux_base_tag}:refs/tags/${termux_base_tag}"             "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
 
-          # Build an allowlisted compatibility delta. Never replay the complete
+          # Build an allowlisted compatibility delta (runtime contract v2). Never replay the complete
           # historical fork diff: it contains unrelated upstream-era changes and
           # silently reintroduces stale APIs when OpenAI changes internals.
           termux_paths=(
