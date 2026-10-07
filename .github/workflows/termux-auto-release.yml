@@ -102,118 +102,89 @@ jobs:
 
           git fetch --force --no-tags upstream             "refs/tags/${termux_base_tag}:refs/tags/${termux_base_tag}"             "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
 
-          # Extract ONLY the published Termux delta from its exact official base.
-          # This excludes unrelated upstream-main commits that happened to live
-          # in the old fork branch between releases.
-          git diff --binary "${termux_base_tag}" refs/remotes/termux-source/release             > "${RUNNER_TEMP}/termux-release-delta.patch"
-          if [ ! -s "${RUNNER_TEMP}/termux-release-delta.patch" ]; then
-            echo "Termux release delta is unexpectedly empty." >&2
-            exit 1
-          fi
+          # Build an allowlisted compatibility delta. Never replay the complete
+          # historical fork diff: it contains unrelated upstream-era changes and
+          # silently reintroduces stale APIs when OpenAI changes internals.
+          termux_paths=(
+            codex-rs/login/src/server.rs
+            codex-rs/Cargo.toml
+            codex-rs/tui/src/updates.rs
+            codex-rs/tui/src/updates_cache.rs
+            codex-rs/tui/src/update_versions.rs
+            codex-rs/tui/src/update_action.rs
+            codex-rs/cli/src/doctor/updates.rs
+            codex-rs/cli/src/doctor.rs
+            codex-rs/tui/src/npm_registry.rs
+            codex-rs/tui/src/update_prompt.rs
+            codex-rs/tui/src/history_cell/notices.rs
+            codex-rs/tui/src/version.rs
+            npm-package/bin
+            npm-package/scripts/postinstall_termux_launcher.js
+            codex-rs/.cargo/config.toml
+            codex-rs/app-server-daemon/src/managed_install.rs
+            codex-rs/app-server-daemon/src/backend/pid.rs
+            codex-rs/app-server-daemon/src/lib.rs
+            codex-rs/cli/src/remote_control_cmd.rs
+            codex-rs/arg0/src/lib.rs
+            codex-rs/core/src/installation_id.rs
+            codex-rs/utils/pty/src/pty.rs
+            codex-rs/app-server-transport/src/transport/unix_socket.rs
+            codex-rs/message-history/src/lib.rs
+            codex-rs/message-history/src/batch.rs
+            codex-rs/execpolicy/src/amend.rs
+            codex-rs/rmcp-client/src/utils.rs
+            codex-rs/tui/src/clipboard_paste.rs
+            codex-rs/code-mode-runtime/Cargo.toml
+            codex-rs/code-mode-host/Cargo.toml
+            codex-rs/code-mode/Cargo.toml
+            codex-rs/core/Cargo.toml
+          )
+
+          git diff --binary "${termux_base_tag}" refs/remotes/termux-source/release -- \
+            "${termux_paths[@]}" > "${RUNNER_TEMP}/termux-runtime.patch"
 
           git checkout --detach "${upstream_tag}"
 
-          # Apply the audited published delta onto the new stable upstream tag.
-          # --3way uses the old official base as the merge base. If a Termux
-          # compatibility change no longer applies cleanly, stop instead of
-          # publishing a guessed binary.
-          set +e
-          git apply --3way --index "${RUNNER_TEMP}/termux-release-delta.patch"
-          apply_rc=$?
-          set -e
-
-          if [ "${apply_rc}" -ne 0 ]; then
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            if [ -z "${conflicts}" ]; then
-              echo "Termux delta failed without merge conflicts." >&2
-              exit "${apply_rc}"
-            fi
-
-            unexpected=0
-            while IFS= read -r path; do
-              case "${path}" in
-                CHANGELOG.md|codex-rs/cli/tests/app_server_daemon.rs|codex-rs/core/src/context/world_state/persistent_mode.rs|codex-rs/core/src/context/world_state/persistent_mode_tests.rs|codex-rs/core/src/guardian/review.rs|codex-rs/core/src/guardian/review_session_tests.rs|codex-rs/core/src/session/step_activation.rs|codex-rs/core/src/session/world_state.rs)
-                  echo "Keeping upstream version for known non-Termux conflict: ${path}"
-                  git checkout --ours -- "${path}"
-                  git add "${path}"
-                  ;;
-                *)
-                  echo "Unexpected Termux delta conflict: ${path}" >&2
-                  unexpected=1
-                  ;;
-              esac
-            done <<< "${conflicts}"
-
-            if [ "${unexpected}" -ne 0 ] || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
-              echo "Termux delta requires manual review; refusing to publish." >&2
+          if [ -s "${RUNNER_TEMP}/termux-runtime.patch" ]; then
+            # 3-way apply is retained for genuine Termux hunks. A conflict here
+            # now means OpenAI changed code that we intentionally patch, so it is
+            # actionable rather than noise from unrelated fork history.
+            if ! git apply --3way --index "${RUNNER_TEMP}/termux-runtime.patch"; then
+              echo "A real Termux compatibility hunk no longer applies to ${upstream_tag}." >&2
+              git diff --name-only --diff-filter=U >&2 || true
               exit 1
             fi
+          else
+            echo "Termux runtime delta is unexpectedly empty." >&2
+            exit 1
           fi
 
-          # Guardian review policy files are not Android/Termux compatibility
-          # patches. Keep the target upstream pair together so their API stays
-          # coherent across Codex releases.
-          git checkout "${upstream_tag}" -- \
-            codex-rs/core/src/guardian/review.rs \
-            codex-rs/core/src/context/guardian_node_repl_policy.rs \
-            codex-rs/core/src/session/step_activation.rs
-          git add \
-            codex-rs/core/src/guardian/review.rs \
-            codex-rs/core/src/context/guardian_node_repl_policy.rs \
-            codex-rs/core/src/session/step_activation.rs
+          # Fork-owned release infrastructure is maintained on our main branch,
+          # not inherited from the historical source release.
+          git checkout origin/main -- \
+            npm-package/package.json \
+            verify-patches.sh \
+            patches/README.md \
+            scripts/fetch_rusty_v8_android.py \
+            scripts/prepare_rusty_v8_android_source.py \
+            scripts/patch_rusty_v8_android_bindgen.py \
+            scripts/build_rusty_v8_android.sh \
+            third_party/v8/android-artifacts.toml
 
-          # Adapt the source fork's model-catalog tests to newer upstream
-          # ModelMessages fields without replacing the Termux/source-fork behavior patch.
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          protocol = Path("codex-rs/protocol/src/openai_models.rs").read_text()
-          test_path = Path("codex-rs/models-manager/src/model_info_tests.rs")
-          tests = test_path.read_text()
-
-          if "pub content_filter_guidance: Option<String>" in protocol:
-              pattern = re.compile(r"ModelMessages\\s*\\{")
-              inserts = []
-              for match in pattern.finditer(tests):
-                  brace = tests.find("{", match.start())
-                  depth = 0
-                  end = None
-                  for pos in range(brace, len(tests)):
-                      if tests[pos] == "{":
-                          depth += 1
-                      elif tests[pos] == "}":
-                          depth -= 1
-                          if depth == 0:
-                              end = pos
-                              break
-                  if end is None:
-                      raise RuntimeError("unterminated ModelMessages initializer")
-                  block = tests[brace:end + 1]
-                  if "content_filter_guidance:" in block:
-                      continue
-                  line_end = tests.find("\n", brace)
-                  if line_end == -1:
-                      raise RuntimeError("ModelMessages initializer has no body")
-                  indent = re.match(r"[ \\t]*", tests[line_end + 1:]).group(0)
-                  inserts.append((line_end + 1, indent + "content_filter_guidance: None,\\n"))
-
-              updated = tests
-              for pos, value in reversed(inserts):
-                  updated = updated[:pos] + value + updated[pos:]
-              if updated != tests:
-                  test_path.write_text(updated)
-                  print(f"Adapted {len(inserts)} ModelMessages test initializer(s) for content_filter_guidance")
-          PY
-          git add codex-rs/models-manager/src/model_info_tests.rs
-
-          # Keep this fork's automation files rather than the source fork's
-          # release workflow copies carried by the compatibility patch.
-          # Remove all upstream workflow files before restoring this fork's
-          # automation. Otherwise the GitHub token cannot push the candidate
-          # branch when the upstream delta adds or modifies workflow files.
+          # Keep this fork's automation files. Upstream/source workflow files
+          # are never part of the compatibility delta.
           git rm -r -f --ignore-unmatch .github/workflows
           git checkout origin/main -- .github/workflows
+          git add \
+            npm-package/package.json \
+            verify-patches.sh \
+            patches/README.md \
+            scripts/fetch_rusty_v8_android.py \
+            scripts/prepare_rusty_v8_android_source.py \
+            scripts/patch_rusty_v8_android_bindgen.py \
+            scripts/build_rusty_v8_android.sh \
+            third_party/v8/android-artifacts.toml \
+            .github/workflows
 
           VERSION="${version}" UPSTREAM_TAG="${upstream_tag}" node <<'NODE'
           const fs = require("node:fs");
