@@ -178,6 +178,7 @@ jobs:
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
             scripts/build_rusty_v8_android.sh \
+            scripts/check_v8_sandbox.py \
             third_party/v8/android-artifacts.toml
 
           # Keep this fork's automation files. Upstream/source workflow files
@@ -200,6 +201,7 @@ jobs:
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
             scripts/build_rusty_v8_android.sh \
+            scripts/check_v8_sandbox.py \
             third_party/v8/android-artifacts.toml \
             .github/workflows
 
