@@ -587,6 +587,9 @@ else
 fi
 
 printf "release version contract (Cargo/npm/notes/changelog): "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "release metadata is finalized after runtime compatibility validation"
+else
 if ! cargo_workspace_version="$(awk '
   /^\[workspace.package\]$/ { workspace_package = 1; next }
   workspace_package && /^version = "/ {
@@ -698,7 +701,12 @@ else
   fail
 fi
 
+fi
+
 printf "Android API 29 package/support contract: "
+if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
+  skip "documentation/package release contract is validated during packaging"
+else
 if grep -q 'aarch64-linux-android29-clang' codex-rs/.cargo/config.toml \
   && grep -q 'aarch64-linux-android29-clang' .github/workflows/termux-npm-build-publish.yml \
   && grep -q 'aarch64-linux-android29-clang' BUILDING.md \
@@ -710,6 +718,8 @@ if grep -q 'aarch64-linux-android29-clang' codex-rs/.cargo/config.toml \
   pass
 else
   fail
+fi
+
 fi
 
 printf "npm package LICENSE/NOTICE payload: "
