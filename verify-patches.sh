@@ -474,6 +474,7 @@ fi
 printf "Patch #26 (Model Catalog Instruction Fallback): "
 if [ "${TERMUX_AUTOPORT_RUNTIME_ONLY:-0}" = "1" ]; then
   skip "not an Android/Termux compatibility patch"
+else
 # 0.156 moved instruction rendering to `prompts::render_model_instructions`
 # (an `unwrap_or_default`), so a custom catalog entry without a usable
 # instructions template would render empty. The fork keeps its
