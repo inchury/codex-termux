@@ -211,6 +211,8 @@ jobs:
           }
 
           '''
+          if "fn is_unsupported_file_lock_error(" in s:
+              raise SystemExit("Termux lock helper already present; refusing duplicate insertion")
           s = replace_once(s, anchor, helper + anchor, "lock helper")
           p.write_text(s)
           PY
