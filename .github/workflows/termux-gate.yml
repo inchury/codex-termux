@@ -1,0 +1,267 @@
+name: termux-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref or SHA to validate; empty uses github.ref
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  shear:
+    name: shear
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: cargo-shear@1.11.2
+      - name: Run cargo shear
+        run: cargo shear
+      - name: Check Cargo.lock is unchanged
+        run: git diff --exit-code Cargo.lock
+
+  deny:
+    name: deny
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Run cargo-deny
+        run: cargo deny check
+      - name: Check Cargo.lock is unchanged
+        run: git diff --exit-code Cargo.lock
+
+  tests:
+    name: targeted tests
+    runs-on: ubuntu-24.04
+    env:
+      RUST_MIN_STACK: "8388608"
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - name: Checkout source ref
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read Rust toolchain
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -n 1)"
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: ${{ steps.rust_toolchain.outputs.channel }}
+      - name: Check no rustls-platform-verifier on Android targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The platform verifier needs an initialized JVM Context on
+          # Android, which a Termux CLI process never has (startup panic).
+          # Guard both halves of the contract: the crate stays out of the
+          # Android dependency graph, and the only source reference remains
+          # the Windows-gated TLS path.
+          android_tree="$(cargo tree --target aarch64-linux-android -i rustls-platform-verifier 2>/dev/null || true)"
+          if [ -n "$android_tree" ]; then
+            echo "rustls-platform-verifier must not appear in the Android dependency graph:" >&2
+            printf '%s\n' "$android_tree" >&2
+            exit 1
+          fi
+          refs="$(grep -rl 'rustls_platform_verifier' --include='*.rs' . | grep -v '/target/' || true)"
+          if [ "$refs" != "./http-client/src/windows_tls.rs" ]; then
+            echo "unexpected rustls_platform_verifier source references:" >&2
+            printf '%s\n' "$refs" >&2
+            exit 1
+          fi
+          if ! grep -A4 '^\[target\.'"'"'cfg(target_os = "windows")'"'"'\.dependencies\]' http-client/Cargo.toml | grep -q 'rustls-platform-verifier'; then
+            echo "rustls-platform-verifier must stay inside the Windows-gated dependency section" >&2
+            exit 1
+          fi
+          echo "rustls-platform-verifier absent from Android graph; Windows-gated only"
+      - name: Test apply_patch sandbox bypass chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pins the approved apply_patch bypass chain for platforms without a
+          # sandbox backend: explicit approval takes the unsandboxed path,
+          # denied reads stay enforced, unapproved requests stay fail-closed,
+          # and unrelated post-bypass failures never resurface as sandbox
+          # denials. These tests inject the platform branch explicitly, so
+          # this job exercises the Android/Termux decision logic on the Linux
+          # host; the inline cfg!(target_os = "android") call sites
+          # (orchestrator decision, apply_patch runtime context, turn
+          # context, shell snapshot) are not compiled here and stay covered
+          # by the injected decision functions plus the Android build
+          # pipeline.
+          cargo test -p codex-core -- file_system_sandbox_context_preserves_executor_workspace_permissions file_system_sandbox_context_respects_sandbox_request approved_apply_patch_on_sandboxless_platform_executes_without_fs_sandbox r2_unrelated_failure_after_bypass_is_not_a_sandbox_denial approved_needs_approval_bypasses_sandbox_on_platform_without_sandbox_by_construction approved_needs_approval_keeps_sandbox_on_platform_expected_to_have_one by_construction_bypass_still_respects_denied_reads by_construction_flag_alone_does_not_bypass_without_approval unapproved_request_on_sandboxless_platform_stays_fail_closed linux_platform_keeps_sandboxed_first_attempt delete_preverification_reads_host_files_when_no_sandbox_can_exist update_preverification_reads_host_files_when_no_sandbox_can_exist denied_read_policy_keeps_preverification_fail_closed_when_no_sandbox_can_exist linux_platform_keeps_preverification_on_the_sandboxed_routing unapproved_apply_patch_on_sandboxless_platform_still_gets_no_bypass 2>&1 | tee termux-gate-apply-patch-sandbox.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-apply-patch-sandbox.out
+          grep -F 'file_system_sandbox_context_preserves_executor_workspace_permissions ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'file_system_sandbox_context_respects_sandbox_request ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'approved_apply_patch_on_sandboxless_platform_executes_without_fs_sandbox ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'r2_unrelated_failure_after_bypass_is_not_a_sandbox_denial ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'approved_needs_approval_bypasses_sandbox_on_platform_without_sandbox_by_construction ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'approved_needs_approval_keeps_sandbox_on_platform_expected_to_have_one ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'by_construction_bypass_still_respects_denied_reads ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'by_construction_flag_alone_does_not_bypass_without_approval ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'unapproved_request_on_sandboxless_platform_stays_fail_closed ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'linux_platform_keeps_sandboxed_first_attempt ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'delete_preverification_reads_host_files_when_no_sandbox_can_exist ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'update_preverification_reads_host_files_when_no_sandbox_can_exist ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'denied_read_policy_keeps_preverification_fail_closed_when_no_sandbox_can_exist ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'linux_platform_keeps_preverification_on_the_sandboxed_routing ... ok' termux-gate-apply-patch-sandbox.out
+          grep -F 'unapproved_apply_patch_on_sandboxless_platform_still_gets_no_bypass ... ok' termux-gate-apply-patch-sandbox.out
+      - name: Test TUI exec flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-tui -- exec_flow 2>&1 | tee termux-gate-tui-exec-flow.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-tui-exec-flow.out
+          grep -F 'replayed_command_completion_preserves_tracking_without_duplicate_starts ... ok' termux-gate-tui-exec-flow.out
+      - name: Test app-server attachment path mapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-app-server -- attachment_path_mapper turn_start_maps_local_image_to_the_termux_attachment_directory turn_steer_maps_local_image_to_the_termux_attachment_directory 2>&1 | tee termux-gate-app-server-attachments.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-app-server-attachments.out
+          grep -F 'termux_maps_only_the_attachments_directory_by_path_component ... ok' termux-gate-app-server-attachments.out
+          grep -F 'turn_start_maps_local_image_to_the_termux_attachment_directory ... ok' termux-gate-app-server-attachments.out
+          grep -F 'turn_steer_maps_local_image_to_the_termux_attachment_directory ... ok' termux-gate-app-server-attachments.out
+      - name: Test model message caps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core -- persistent_instructions_reject_oversized_values persistent_instructions_preserve_empty_none_and_exact_limit persistent_instructions_validate_after_placeholder_rendering guardian_node_repl_policy_rejects_oversized_values guardian_node_repl_policy_accepts_none_empty_and_exact_limit local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests 2>&1 | tee termux-gate-model-message-caps.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-model-message-caps.out
+          grep -F 'persistent_instructions_reject_oversized_values ... ok' termux-gate-model-message-caps.out
+          grep -F 'persistent_instructions_preserve_empty_none_and_exact_limit ... ok' termux-gate-model-message-caps.out
+          grep -F 'persistent_instructions_validate_after_placeholder_rendering ... ok' termux-gate-model-message-caps.out
+          grep -F 'guardian_node_repl_policy_rejects_oversized_values ... ok' termux-gate-model-message-caps.out
+          grep -F 'guardian_node_repl_policy_accepts_none_empty_and_exact_limit ... ok' termux-gate-model-message-caps.out
+          grep -F 'local_catalog_loader_accepts_exact_limit_and_rejects_oversized_messages ... ok' termux-gate-model-message-caps.out
+          grep -F 'guardian_oversized_node_repl_policy_fails_closed_without_model_or_tool_requests ... ok' termux-gate-model-message-caps.out
+      - name: Test terminal guardian cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p codex-rmcp-client --bin test_stdio_server
+          cargo test -p codex-core --test all -- suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution --exact 2>&1 | tee termux-gate-model-guardian-terminal.out
+          grep -F 'test suite::guardian_review::guardian_oversized_node_repl_policy_denies_before_tool_execution ... ok' termux-gate-model-guardian-terminal.out
+      - name: Test terminal guardian execution probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- suite::guardian_review::guardian_approved_node_repl_policy_records_server_call --exact 2>&1 | tee termux-gate-model-guardian-execution-probe.out
+          grep -F 'test suite::guardian_review::guardian_approved_node_repl_policy_records_server_call ... ok' termux-gate-model-guardian-execution-probe.out
+      - name: Test terminal persistent cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-persistent-terminal.out
+          grep -F 'test suite::guardian_review::persistent_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-persistent-terminal.out
+      - name: Test terminal rendered persistent cap proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-core --test all -- suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference --exact 2>&1 | tee termux-gate-model-rendered-persistent-terminal.out
+          grep -F 'test suite::guardian_review::persistent_rendered_oversized_instructions_fail_session_before_inference ... ok' termux-gate-model-rendered-persistent-terminal.out
+      - name: Test model catalog ingress caps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-api -- remote_models_loader_drops_only_the_oversized_model remote_models_loader_accepts_the_exact_limit 2>&1 | tee termux-gate-model-api-caps.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-model-api-caps.out
+          grep -F 'remote_models_loader_drops_only_the_oversized_model ... ok' termux-gate-model-api-caps.out
+          grep -F 'remote_models_loader_accepts_the_exact_limit ... ok' termux-gate-model-api-caps.out
+          cargo test -p codex-models-manager -- file_cache_loader_keeps_the_valid_models_when_one_is_oversized file_cache_loader_still_fails_when_every_cached_model_is_oversized 2>&1 | tee termux-gate-model-cache-caps.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-model-cache-caps.out
+          grep -F 'file_cache_loader_keeps_the_valid_models_when_one_is_oversized ... ok' termux-gate-model-cache-caps.out
+          grep -F 'file_cache_loader_still_fails_when_every_cached_model_is_oversized ... ok' termux-gate-model-cache-caps.out
+      - name: Test protocol model message caps
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p codex-protocol -- model_message_text_cap_reports_field_slug_size_and_no_content model_message_text_cap_counts_utf8_bytes_without_truncating 2>&1 | tee termux-gate-model-protocol-caps.out
+          grep -E 'test result: ok\. [1-9][0-9]* passed' termux-gate-model-protocol-caps.out
+          grep -F 'model_message_text_cap_reports_field_slug_size_and_no_content ... ok' termux-gate-model-protocol-caps.out
+          grep -F 'model_message_text_cap_counts_utf8_bytes_without_truncating ... ok' termux-gate-model-protocol-caps.out
