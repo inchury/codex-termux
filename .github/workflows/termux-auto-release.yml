@@ -195,7 +195,7 @@ jobs:
           {
           return Err(err);
           }''', "unlock")
-          anchor = '#[cfg(unix)]\\nasync fn set_control_socket_permissions'
+          anchor = '#[cfg(unix)]\nasync fn set_control_socket_permissions'
           helper = '''fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
               err.kind() == ErrorKind::Unsupported
           }
