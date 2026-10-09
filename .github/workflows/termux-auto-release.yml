@@ -348,7 +348,25 @@ jobs:
           # the Android build. Cargo-backed checks remain enabled here.
           CODEX_PUBLIC_SANITIZED_TREE=1 TERMUX_AUTOPORT_RUNTIME_ONLY=1 bash verify-patches.sh
 
+          # These files are modified after git apply --index. Explicitly stage
+          # the rebased changes or the candidate branch loses the Android fixes.
+          git add -- \
+            codex-rs/cli/src/remote_control_cmd.rs \
+            codex-rs/app-server-transport/src/transport/unix_socket.rs
+
+          # Verify the exact staged tree, not just the working directory.
+          if ! git diff --quiet; then
+            echo "Unstaged changes remain after preparing the release candidate:" >&2
+            git diff --name-only >&2
+            exit 1
+          fi
+
           git commit --allow-empty -m "chore(termux): port ${termux_source_tag} delta to ${upstream_tag}"
+
+          # Confirm the committed candidate still contains both compatibility shims.
+          git show HEAD:codex-rs/cli/src/remote_control_cmd.rs | grep -q 'tempdir_in(std::env::temp_dir())'
+          git show HEAD:codex-rs/app-server-transport/src/transport/unix_socket.rs | grep -q 'is_unsupported_file_lock_error'
+          CODEX_PUBLIC_SANITIZED_TREE=1 TERMUX_AUTOPORT_RUNTIME_ONLY=1 bash verify-patches.sh
 
           # Push only a disposable candidate branch. main stays an automation/
           # maintenance branch; the successful release tag is the immutable
