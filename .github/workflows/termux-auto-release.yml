@@ -126,12 +126,10 @@ jobs:
             codex-rs/app-server-daemon/src/managed_install.rs
             codex-rs/app-server-daemon/src/backend/pid.rs
             codex-rs/app-server-daemon/src/lib.rs
-            codex-rs/cli/src/remote_control_cmd.rs
             codex-rs/arg0/src/lib.rs
             codex-rs/core/src/installation_id.rs
             codex-rs/rollout/src/writer_lock.rs
             codex-rs/utils/pty/src/pty.rs
-            codex-rs/app-server-transport/src/transport/unix_socket.rs
             codex-rs/message-history/src/lib.rs
             codex-rs/message-history/src/batch.rs
             codex-rs/execpolicy/src/amend.rs
@@ -161,6 +159,61 @@ jobs:
             echo "Termux runtime delta is unexpectedly empty." >&2
             exit 1
           fi
+
+          # Rebase two small Termux changes onto the current upstream API.
+          # Never replay the old complete files: 0.162 changed socket locking
+          # and remote-control command handling significantly.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if text.count(old) != 1:
+                  raise SystemExit(f"Termux rebase anchor mismatch: {label}")
+              return text.replace(old, new, 1)
+
+          p = Path("codex-rs/cli/src/remote_control_cmd.rs")
+          s = p.read_text()
+          s = replace_once(s, '.tempdir_in("/tmp")', '.tempdir_in(std::env::temp_dir())', "remote-control tempdir")
+          p.write_text(s)
+
+          p = Path("codex-rs/app-server-transport/src/transport/unix_socket.rs")
+          s = p.read_text()
+          s = replace_once(s, '        file.lock()?;', '''        if let Err(err) = file.lock()
+              && !is_unsupported_file_lock_error(&err)
+          {
+              return Err(err);
+          }''', "startup lock")
+          s = replace_once(s, '    file.try_lock()?;', '''    if let Err(err) = file.try_lock()
+        && !matches!(err, std::fs::TryLockError::Error(ref e) if is_unsupported_file_lock_error(e))
+    {
+        return Err(err.into());
+    }''', "removable startup lock")
+          s = replace_once(s, '            Err(std::fs::TryLockError::Error(err)) => return Err(err),', '''            Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => return Ok(()),
+            Err(std::fs::TryLockError::Error(err)) => return Err(err),''', "cleanup lock")
+          s = replace_once(s, '    socket_guard._startup_lock._file.unlock()?;', '''    if let Err(err) = socket_guard._startup_lock._file.unlock()
+        && !is_unsupported_file_lock_error(&err)
+    {
+        return Err(err);
+    }''', "unlock")
+          anchor = '#[cfg(unix)]\\nasync fn set_control_socket_permissions'
+          helper = '''fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
+              err.kind() == ErrorKind::Unsupported
+          }
+
+          #[cfg(test)]
+          mod unsupported_lock_helper_tests {
+              use super::is_unsupported_file_lock_error;
+              use std::io::ErrorKind;
+              #[test]
+              fn unsupported_kind_is_classified_as_unsupported_lock_error() {
+                  assert!(is_unsupported_file_lock_error(&ErrorKind::Unsupported.into()));
+              }
+          }
+
+          '''
+          s = replace_once(s, anchor, helper + anchor, "lock helper")
+          p.write_text(s)
+          PY
 
           # Fork-owned release infrastructure is maintained on our main branch,
           # not inherited from the historical source release.
