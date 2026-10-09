@@ -178,23 +178,34 @@ jobs:
 
           p = Path("codex-rs/app-server-transport/src/transport/unix_socket.rs")
           s = p.read_text()
-          s = replace_once(s, '        file.lock()?;', '''        if let Err(err) = file.lock()
-              && !is_unsupported_file_lock_error(&err)
-          {
-              return Err(err);
-          }''', "startup lock")
-          s = replace_once(s, '    file.try_lock()?;', '''    if let Err(err) = file.try_lock()
-          && !matches!(err, std::fs::TryLockError::Error(ref e) if is_unsupported_file_lock_error(e))
-          {
-          return Err(err.into());
-          }''', "removable startup lock")
-          s = replace_once(s, '            Err(std::fs::TryLockError::Error(err)) => return Err(err),', '''            Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => return Ok(()),
-            Err(std::fs::TryLockError::Error(err)) => return Err(err),''', "cleanup lock")
-          s = replace_once(s, '    socket_guard._startup_lock._file.unlock()?;', '''    if let Err(err) = socket_guard._startup_lock._file.unlock()
-          && !is_unsupported_file_lock_error(&err)
-          {
-          return Err(err);
-          }''', "unlock")
+          s = replace_once(s, '        file.lock()?;', '\n'.join([
+              '        if let Err(err) = file.lock()',
+              '            && !is_unsupported_file_lock_error(&err)',
+              '        {',
+              '            return Err(err);',
+              '        }',
+          ]), "startup lock")
+          s = replace_once(s, '    file.try_lock()?;', '\n'.join([
+              '    if let Err(err) = file.try_lock()',
+              '        && !matches!(err, std::fs::TryLockError::Error(ref e) if is_unsupported_file_lock_error(e))',
+              '    {',
+              '        return Err(match err {',
+              '            std::fs::TryLockError::WouldBlock => ErrorKind::WouldBlock.into(),',
+              '            std::fs::TryLockError::Error(err) => err,',
+              '        });',
+              '    }',
+          ]), "removable startup lock")
+          s = replace_once(s, '            Err(std::fs::TryLockError::Error(err)) => return Err(err),', '\n'.join([
+              '            Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => return Ok(()),',
+              '            Err(std::fs::TryLockError::Error(err)) => return Err(err),',
+          ]), "cleanup lock")
+          s = replace_once(s, '    socket_guard._startup_lock._file.unlock()?;', '\n'.join([
+              '    if let Err(err) = socket_guard._startup_lock._file.unlock()',
+              '        && !is_unsupported_file_lock_error(&err)',
+              '    {',
+              '        return Err(err);',
+              '    }',
+          ]), "unlock")
           anchor = '#[cfg(unix)]\nasync fn set_control_socket_permissions'
           helper = '''fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
               err.kind() == ErrorKind::Unsupported
