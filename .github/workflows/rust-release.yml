@@ -19,10 +19,8 @@ env:
   CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
   CODEX_ZSH_MANIFEST_SHA256: c534eab89dcea7e3d8a5e5b3f49c025c7c64cd4e4d9814ee24871de58a9359a1
 
-# The launcher uses this per-tag group as the migration boundary. Keep shared
-# publication jobs on the original queued group below when changing this.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -43,12 +41,13 @@ jobs:
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
             || { echo "❌  Not a tag ref"; exit 1; }
 
-          tag_ver="${GITHUB_REF_NAME#rust-v}"
-          [[ "${GITHUB_REF_NAME}" == rust-v* ]] \
-            && python3 .github/scripts/releases.py "${tag_ver}" \
+          # Release tags must match the version in Cargo.toml.
+          # Keep this pattern in sync with VERSION_RE in
+          # .github/scripts/publish_r2_release.py.
+          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha(\.[0-9]+){0,2}|beta(\.[0-9]+)?))?$ ]] \
             || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
 
-          # Release tags must match the version in Cargo.toml.
+          tag_ver="${GITHUB_REF_NAME#rust-v}"
           cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
                         | sed -E 's/version *= *"([^"]+)".*/\1/')"
 
@@ -1533,12 +1532,6 @@ jobs:
           if-no-files-found: error
 
   release:
-    # Each job checks its channel under this lock; out-of-order builds cannot
-    # roll back GitHub, npm, R2, or the canary branch.
-    concurrency: &release-publication
-      group: rust-release
-      queue: max
-      cancel-in-progress: false
     needs:
       - tag-check
       - build
@@ -1615,6 +1608,17 @@ jobs:
         if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
         run: rm dist/provisioned-macos-verified-candidate-*/SHA256SUMS
 
+      - name: Download verified provisioned macOS packages
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: "provisioned-macos-verified-candidate-*"
+
+      - name: Remove per-architecture checksum filenames before release upload
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        run: rm dist/provisioned-macos-verified-candidate-*/SHA256SUMS
+
       - name: List
         run: ls -R dist/
 
@@ -1647,10 +1651,7 @@ jobs:
 
       - name: Define release name
         id: release_name
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
           # Extract the version from the tag name, which is in the format
           # "rust-v0.1.0".
           version="${GITHUB_REF_NAME#rust-v}"
@@ -1659,9 +1660,7 @@ jobs:
             echo "make_latest=false" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
           else
-            make_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
-              | python3 .github/scripts/releases.py "$version" --check-github latest)"
-            echo "make_latest=${make_latest}" >> $GITHUB_OUTPUT
+            echo "make_latest=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
@@ -1687,7 +1686,7 @@ jobs:
       - name: Stage installer scripts
         run: |
           cp scripts/install/install.sh dist/install.sh
-          mv dist/x86_64-pc-windows-msvc/install.ps1 dist/install.ps1
+          cp scripts/install/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -1722,7 +1721,6 @@ jobs:
       stage: assets
 
   publish-r2:
-    concurrency: *release-publication
     name: publish-r2
     needs: [release, publish-dotslash, publish-r2-assets]
     if: >-
@@ -1773,11 +1771,19 @@ jobs:
           tag: ${{ github.ref_name }}
           config: .github/dotslash-provisioned-config.json
 
+      - name: Publish the provisioned macOS package manifest
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        uses: facebook/dotslash-publish-release@9c9ec027515c34db9282a09a25a9cab5880b2c52 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ github.ref_name }}
+          config: .github/dotslash-provisioned-config.json
+
   # Publish to npm using OIDC authentication.
   # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
   # npm docs: https://docs.npmjs.com/trusted-publishers
   publish-npm:
-    concurrency: *release-publication
     # Publish to npm for stable releases, numbered alphas, and alpha hotfixes.
     if: >-
       ${{
@@ -1793,11 +1799,6 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
@@ -1918,10 +1919,6 @@ jobs:
                 ;;
             esac
 
-            # The publication workflow holds the lock from this lookup through
-            # publish, including concurrent releases from other version lines.
-            tag="$(python3 .github/scripts/npm_alpha_tag.py "${tarball}" "${VERSION}" "${tag:-latest}")"
-
             publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
             if [[ -n "${tag}" ]]; then
               publish_cmd+=(--tag "${tag}")
@@ -1976,7 +1973,6 @@ jobs:
           fi
 
   winget:
-    concurrency: *release-publication
     name: winget
     needs: release
     # Only publish stable/mainline releases to WinGet; pre-releases include a
@@ -2038,15 +2034,16 @@ jobs:
           komac cleanup --only-merged
 
   update-branch:
-    concurrency: *release-publication
     name: Update latest-alpha-cli branch
     if: >-
       ${{
         !cancelled() &&
         needs.release.result == 'success' &&
-        needs.release.outputs.npm_tag == 'alpha' &&
         needs.publish-r2.result == 'success' &&
-        needs.publish-npm.result == 'success'
+        (
+          needs.release.outputs.should_publish_npm != 'true' ||
+          needs.publish-npm.result == 'success'
+        )
       }}
     permissions:
       contents: write
@@ -2058,26 +2055,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Determine whether to update the GitHub canary branch
-        id: github_canary
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-          PYTHONPATH: .github/scripts
-        run: |
-          set -euo pipefail
-          # Despite its name, raw+json returns raw TOML. The default response
-          # is JSON metadata with the file contents encoded as base64.
-          update="$(gh api "repos/$GITHUB_REPOSITORY/contents/codex-rs/Cargo.toml?ref=latest-alpha-cli" \
-            -H 'Accept: application/vnd.github.raw+json' \
-            | python3 .github/scripts/releases.py "$RELEASE_VERSION" --check-github canary)"
-          echo "update=$update" >> "$GITHUB_OUTPUT"
       - name: Update latest-alpha-cli branch
-        if: success() && steps.github_canary.outputs.update == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
