@@ -39,7 +39,7 @@ use ratatui::widgets::Wrap;
 #[cfg(not(debug_assertions))]
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/DioNanos/codex-termux/releases/latest";
+const RELEASE_NOTES_URL: &str = "https://github.com/inchury/codex-termux/releases/latest";
 
 #[cfg(not(debug_assertions))]
 pub(crate) enum UpdatePromptOutcome {
@@ -55,9 +55,7 @@ pub(crate) async fn run_update_prompt_if_needed(
     let Some(latest_version) = updates::get_upgrade_version_for_popup(config) else {
         return Ok(UpdatePromptOutcome::Continue);
     };
-    let Some(update_action) = crate::update_action::get_update_action() else {
-        return Ok(UpdatePromptOutcome::Continue);
-    };
+    let update_action = UpdateAction::StandaloneUnix;
 
     let mut screen =
         UpdatePromptScreen::new(tui.frame_requester(), latest_version.clone(), update_action);
@@ -89,7 +87,7 @@ pub(crate) async fn run_update_prompt_if_needed(
     match screen.selection() {
         Some(UpdateSelection::UpdateNow) => {
             tui.terminal.clear()?;
-            Ok(UpdatePromptOutcome::RunUpdate(update_action))
+            Ok(UpdatePromptOutcome::Continue)
         }
         Some(UpdateSelection::NotNow) | None => Ok(UpdatePromptOutcome::Continue),
         Some(UpdateSelection::DontRemind) => {
@@ -205,7 +203,7 @@ impl WidgetRef for &UpdatePromptScreen {
         Clear.render(area, buf);
         let mut column = FlexRenderable::new();
 
-        let update_command = self.update_action.command_str();
+        // Notification only: never invoke an updater or suggest an npm command.
 
         column.push(/*flex*/ 1, RenderableItem::Borrowed(&""));
         column.push(
@@ -241,7 +239,7 @@ impl WidgetRef for &UpdatePromptScreen {
             /*flex*/ 1,
             picker_option_list(
                 vec![
-                    format!("Update now (runs `{update_command}`)"),
+                    "View release notes at the URL above (manual install only)".to_string(),
                     "Skip".to_string(),
                     "Skip until next version".to_string(),
                 ],
