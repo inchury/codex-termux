@@ -10,19 +10,19 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Replace the local daemon after restoring the terminal.
     Daemon(DaemonUpdateSource),
-    /// Update via `npm install -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update via `npm install -g @inchury/codex-cli-termux@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update via `bun install -g @inchury/codex-cli-termux@latest`.
     BunGlobalLatest,
-    /// Update via `vp install -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update via `vp install -g @inchury/codex-cli-termux@latest`.
     VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update via `pnpm add -g @inchury/codex-cli-termux@latest`.
     PnpmGlobalLatest,
     /// Redirect a detected Homebrew install to the supported fork npm package.
     BrewUpgrade,
-    /// Update standalone installs via `npm install -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update standalone installs via `npm install -g @inchury/codex-cli-termux@latest`.
     StandaloneUnix,
-    /// Update standalone installs via `npm install -g @mmmbuto/codex-cli-termux@latest`.
+    /// Update standalone installs via `npm install -g @inchury/codex-cli-termux@latest`.
     StandaloneWindows,
 }
 
@@ -51,32 +51,32 @@ impl UpdateAction {
             // update request through the supported fork npm channel instead.
             UpdateAction::Daemon(_) => (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"],
             ),
             UpdateAction::NpmGlobalLatest => (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"],
             ),
             UpdateAction::BunGlobalLatest => (
                 "bun",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"],
             ),
             UpdateAction::VitePlusGlobalLatest => {
-                ("vp", &["install", "-g", "@mmmbuto/codex-cli-termux@latest"])
+                ("vp", &["install", "-g", "@inchury/codex-cli-termux@latest"])
             }
             UpdateAction::PnpmGlobalLatest => {
-                ("pnpm", &["add", "-g", "@mmmbuto/codex-cli-termux@latest"])
+                ("pnpm", &["add", "-g", "@inchury/codex-cli-termux@latest"])
             }
             // codex-termux fork: no Homebrew cask is shipped, so `brew upgrade
             // --cask codex` would pull the UPSTREAM openai cask and replace the
             // fork. Redirect to the supported npm channel, like Standalone*.
             UpdateAction::BrewUpgrade => (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"],
             ),
             UpdateAction::StandaloneUnix | UpdateAction::StandaloneWindows => (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"],
             ),
         }
     }
@@ -171,21 +171,21 @@ mod tests {
             UpdateAction::StandaloneUnix.command_args(),
             (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"][..],
             )
         );
         assert_eq!(
             UpdateAction::StandaloneWindows.command_args(),
             (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"][..],
             )
         );
         assert_eq!(
             UpdateAction::BrewUpgrade.command_args(),
             (
                 "npm",
-                &["install", "-g", "@mmmbuto/codex-cli-termux@latest"][..],
+                &["install", "-g", "@inchury/codex-cli-termux@latest"][..],
             )
         );
     }
