@@ -228,6 +228,39 @@ jobs:
           p.write_text(s)
           PY
 
+          # Repoint update checks/actions to this fork on the rebased upstream tree.
+          # Do not overwrite whole Rust files with older main-branch versions.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              "codex-rs/tui/src/updates.rs": [
+                  ("DioNanos/codex-termux", "inchury/codex-termux"),
+                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
+              ],
+              "codex-rs/cli/src/doctor/updates.rs": [
+                  ("DioNanos/codex-termux", "inchury/codex-termux"),
+                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
+                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
+              ],
+              "codex-rs/tui/src/npm_registry.rs": [
+                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
+                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
+              ],
+              "codex-rs/tui/src/update_action.rs": [
+                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
+              ],
+          }
+          for filename, pairs in replacements.items():
+              path = Path(filename)
+              content = path.read_text()
+              for old, new in pairs:
+                  if old not in content and new not in content:
+                      raise SystemExit(f"Missing update-channel anchor: {filename}: {old}")
+                  content = content.replace(old, new)
+              path.write_text(content)
+          PY
+
           # Fork-owned release infrastructure is maintained on our main branch,
           # not inherited from the historical source release.
           git checkout origin/main -- \
@@ -352,7 +385,11 @@ jobs:
           # the rebased changes or the candidate branch loses the Android fixes.
           git add -- \
             codex-rs/cli/src/remote_control_cmd.rs \
-            codex-rs/app-server-transport/src/transport/unix_socket.rs
+            codex-rs/app-server-transport/src/transport/unix_socket.rs \
+            codex-rs/tui/src/updates.rs \
+            codex-rs/cli/src/doctor/updates.rs \
+            codex-rs/tui/src/npm_registry.rs \
+            codex-rs/tui/src/update_action.rs
 
           # Verify the exact staged tree, not just the working directory.
           if ! git diff --quiet; then
