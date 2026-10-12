@@ -34,8 +34,8 @@ const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
 const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/DioNanos/codex-termux/releases/latest";
-const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@mmmbuto%2fcodex-cli-termux/latest";
+    "https://api.github.com/repos/inchury/codex-termux/releases/latest";
+const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@inchury%2fcodex-cli-termux/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -390,11 +390,11 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @mmmbuto/codex-cli-termux",
-        InstallMethod::Bun => "bun install -g @mmmbuto/codex-cli-termux",
-        InstallMethod::VitePlus => "vp install -g @mmmbuto/codex-cli-termux",
-        InstallMethod::Pnpm => "pnpm add -g @mmmbuto/codex-cli-termux",
-        InstallMethod::Brew => "npm install -g @mmmbuto/codex-cli-termux",
+        InstallMethod::Npm => "npm install -g @inchury/codex-cli-termux",
+        InstallMethod::Bun => "bun install -g @inchury/codex-cli-termux",
+        InstallMethod::VitePlus => "vp install -g @inchury/codex-cli-termux",
+        InstallMethod::Pnpm => "pnpm add -g @inchury/codex-cli-termux",
+        InstallMethod::Brew => "npm install -g @inchury/codex-cli-termux",
         InstallMethod::Standalone { .. } => "standalone installer",
         InstallMethod::Other => "manual or unknown",
     }
@@ -694,14 +694,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @mmmbuto/codex-cli-termux"
+            "npm install -g @inchury/codex-cli-termux"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @mmmbuto/codex-cli-termux"
+            "pnpm add -g @inchury/codex-cli-termux"
         );
         assert_eq!(
             update_action_label(&InstallContext {
