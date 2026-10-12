@@ -1,8 +1,6 @@
 #![cfg(not(debug_assertions))]
 
 use crate::legacy_core::config::Config;
-use crate::update_action;
-use crate::update_action::UpdateAction;
 use crate::update_versions::extract_version_from_latest_tag;
 use crate::update_versions::is_newer;
 use crate::update_versions::is_source_build_version;
@@ -27,9 +25,8 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         return None;
     }
 
-    let action = update_action::get_update_action();
     let version_file = version_filepath(config);
-    let expected_source = current_update_source(action);
+    let expected_source = "github-release";
     let info = read_version_info(&version_file)
         .ok()
         .filter(|info| info.source.as_deref() == Some(expected_source));
@@ -43,7 +40,7 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
         tokio::spawn(async move {
-            check_for_update(&version_file, action, http_client_factory)
+            check_for_update(&version_file, http_client_factory)
                 .await
                 .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
         });
@@ -60,21 +57,13 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
 
 const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/inchury/codex-termux/releases/latest";
-const NPM_LATEST_URL: &str = "https://registry.npmjs.org/@inchury%2fcodex-cli-termux/latest";
-
 #[derive(Deserialize, Debug, Clone)]
 struct ReleaseInfo {
     tag_name: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-struct NpmLatestInfo {
-    version: String,
-}
-
 async fn check_for_update(
     version_file: &Path,
-    action: Option<UpdateAction>,
     http_client_factory: HttpClientFactory,
 ) -> anyhow::Result<()> {
     let client_pool = RouteAwareClientPool::with_chatgpt_cloudflare_cookies(
@@ -82,33 +71,8 @@ async fn check_for_update(
         ClientRouteClass::Other,
     )
     .with_legacy_custom_ca_fallback();
-    let source = current_update_source(action);
-    let latest_version = match action {
-        // codex-termux fork: daemon update is routed to the fork npm channel
-        // (see UpdateAction::Daemon), so no version check is needed here.
-        Some(UpdateAction::Daemon(_)) => return Ok(()),
-        // This fork is not distributed through Homebrew, so a brew install can
-        // only have come from the npm package; ask the registry directly for the
-        // published version instead of upstream's two-step release/npm check.
-        Some(UpdateAction::NpmGlobalLatest)
-        | Some(UpdateAction::BunGlobalLatest)
-        | Some(UpdateAction::VitePlusGlobalLatest)
-        | Some(UpdateAction::PnpmGlobalLatest)
-        | Some(UpdateAction::BrewUpgrade) => {
-            let NpmLatestInfo { version } = client_pool
-                .get(NPM_LATEST_URL)
-                .headers(default_headers())
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<NpmLatestInfo>()
-                .await?;
-            version
-        }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
-        }
-    };
+    let source = "github-release";
+    let latest_version = fetch_latest_github_release_version(&client_pool).await?;
 
     // Preserve any previously dismissed version if present.
     let prev_info = read_version_info(version_file).ok();
@@ -127,22 +91,6 @@ async fn check_for_update(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
-}
-
-fn current_update_source(action: Option<UpdateAction>) -> &'static str {
-    match action {
-        // codex-termux fork: daemon updates follow the fork npm channel; the
-        // caller short-circuits with an early return before reading the source.
-        Some(UpdateAction::Daemon(_)) => "npm",
-        Some(UpdateAction::NpmGlobalLatest) => "npm",
-        Some(UpdateAction::BunGlobalLatest) => "bun",
-        Some(UpdateAction::VitePlusGlobalLatest) => "npm",
-        Some(UpdateAction::PnpmGlobalLatest) => "pnpm",
-        Some(UpdateAction::BrewUpgrade) => "npm",
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            "github-release"
-        }
-    }
 }
 
 async fn fetch_latest_github_release_version(
