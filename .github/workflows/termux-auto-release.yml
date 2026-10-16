@@ -186,6 +186,45 @@ jobs:
               if s.count(anchor) != 1:
                   raise SystemExit("arg0 lock helper anchor mismatch")
               s = s.replace(anchor, anchor + "\n\n" + helper, 1)
+          # Preserve the fork's stable executable path for Termux re-exec.
+          if 'const CODEX_SELF_EXE_ENV:' not in s:
+              s = s.replace('const LOCK_FILENAME: &str = ".lock";',
+                            'const CODEX_SELF_EXE_ENV: &str = "CODEX_SELF_EXE";\nconst LOCK_FILENAME: &str = ".lock";', 1)
+          if 'fn resolve_codex_self_exe()' not in s:
+              anchor = 'fn linux_sandbox_exe_path('
+              resolver = """fn resolve_codex_self_exe() -> Option<PathBuf> {
+              std::env::var_os(CODEX_SELF_EXE_ENV)
+                  .filter(|value| !value.is_empty())
+                  .map(PathBuf::from)
+                  .or_else(|| std::env::current_exe().ok())
+          }
+
+          """
+              if s.count(anchor) != 1:
+                  raise SystemExit("arg0 self executable resolver anchor mismatch")
+              s = s.replace(anchor, resolver + anchor, 1)
+          s = s.replace('let exe = std::env::current_exe()?;',
+                        'let exe = resolve_codex_self_exe().ok_or(std::io::ErrorKind::NotFound)?;', 1)
+          if 'if !is_unsupported_file_lock_error(&io_err)' not in s:
+              s = s.replace('''    if let Err(err) = lock_file.try_lock() {
+              match err {
+                  std::fs::TryLockError::Error(ref io_err)
+                      if is_unsupported_file_lock_error(io_err) => {}
+                  std::fs::TryLockError::WouldBlock => {
+                      return Err(std::io::ErrorKind::WouldBlock.into());
+                  }
+                  std::fs::TryLockError::Error(io_err) => return Err(io_err),
+              }
+          }''', '''    if let Err(err) = lock_file.try_lock() {
+              let io_err: std::io::Error = err.into();
+              if !is_unsupported_file_lock_error(&io_err) {
+                  return Err(io_err);
+              }
+          }''', 1)
+          if 'if is_unsupported_file_lock_error(&io_err)' not in s:
+              s = s.replace('''        Err(std::fs::TryLockError::Error(io_err))
+              if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),''',
+                            '''        Err(std::fs::TryLockError::Error(io_err)) if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),''', 1)
           old = '    lock_file.try_lock()?;'
           new = """    if let Err(err) = lock_file.try_lock() {
               match err {
