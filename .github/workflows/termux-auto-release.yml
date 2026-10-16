@@ -301,7 +301,6 @@ jobs:
             codex-rs/cli/src/doctor/updates.rs \
             codex-rs/cli/src/doctor.rs \
             codex-rs/tui/src/npm_registry.rs \
-            codex-rs/tui/src/history_cell/notices.rs \
             codex-rs/tui/src/version.rs
 
           # Fork-owned release infrastructure is maintained on our main branch,
@@ -500,7 +499,7 @@ jobs:
         run: |
           set -euo pipefail
           title="Termux auto-build failed for ${UPSTREAM_TAG}"
-          if ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100               --json title --jq '.[].title' | grep -Fxq "${title}"; then
+          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.has_issues')" == "true" ]] && ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 --json title --jq '.[].title' | grep -Fxq "${title}"; then
             gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "The automatic Termux build for **${UPSTREAM_TAG}** failed. The candidate branch **${CANDIDATE_BRANCH}** was kept for inspection. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           fi
 
@@ -520,6 +519,6 @@ jobs:
           set -euo pipefail
           upstream_tag="$(gh api repos/openai/codex/releases/latest --jq '.tag_name' 2>/dev/null || echo unknown)"
           title="Termux auto-sync failed for ${upstream_tag}"
-          if ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100               --json title --jq '.[].title' | grep -Fxq "${title}"; then
+          if [[ "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.has_issues')" == "true" ]] && ! gh issue list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 --json title --jq '.[].title' | grep -Fxq "${title}"; then
             gh issue create --repo "${GITHUB_REPOSITORY}"               --title "${title}"               --body "Automatic upstream synchronization failed before the Termux build could start. The workflow ports the published Termux release delta onto the new official stable tag and fails closed if that delta no longer applies, the patch contract is broken, or a new rusty_v8 Android prebuild is required. Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           fi
