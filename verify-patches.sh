@@ -74,20 +74,21 @@ else
   fail
 fi
 
-printf "Patch #4/#5 (Fork Update Channel + Termux Tag Parser): "
-if grep -q "DioNanos/codex-termux" codex-rs/tui/src/updates.rs \
-  && grep -q 'current_update_source' codex-rs/tui/src/updates.rs \
+printf "Patch #4/#5 (GitHub-only Version Notice + Termux Tag Parser): "
+if grep -q 'api.github.com/repos/inchury/codex-termux/releases/latest' codex-rs/tui/src/updates.rs \
+  && ! grep -q 'registry.npmjs.org' codex-rs/tui/src/updates.rs \
   && grep -q 'pub(crate) source: Option<String>' codex-rs/tui/src/updates_cache.rs \
   && grep -q "split('-')" codex-rs/tui/src/update_versions.rs \
-  && grep -q "strip_prefix(\"rust-v\")" codex-rs/tui/src/update_versions.rs \
+  && grep -q 'strip_prefix("rust-v")' codex-rs/tui/src/update_versions.rs \
   && grep -q "strip_prefix('v')" codex-rs/tui/src/update_versions.rs; then
   pass
 else
   fail
 fi
 
-printf "Patch #6 (Termux npm Package Name): "
-if grep -q "@mmmbuto/codex-cli-termux@latest" codex-rs/tui/src/update_action.rs; then
+printf "Patch #6 (No automatic npm updates): "
+if ! grep -q 'Update now (runs' codex-rs/tui/src/update_prompt.rs \
+  && grep -q 'manual install only' codex-rs/tui/src/update_prompt.rs; then
   pass
 else
   fail
@@ -242,22 +243,12 @@ fi
 # was a false exclusion that would fail on lawful upstream content. The fork
 # side of the Homebrew story ("not distributed through Homebrew", redirect to
 # the fork npm channel) is covered by the DioNanos/@mmmbuto pins below.
-printf "Patch #6b (Fork Identity Across UI/Doctor/NPM Surfaces): "
-if grep -q "DioNanos/codex-termux/releases/latest" codex-rs/cli/src/doctor/updates.rs \
-  && grep -q "@mmmbuto/codex-cli-termux" codex-rs/cli/src/doctor/updates.rs \
-  && grep -q "@mmmbuto/codex-cli-termux" codex-rs/cli/src/doctor.rs \
-  && grep -q "@mmmbuto%2fcodex-cli-termux" codex-rs/tui/src/npm_registry.rs \
-  && grep -q "DioNanos/codex-termux" codex-rs/tui/src/update_prompt.rs \
-  && grep -q "DioNanos/codex-termux" codex-rs/tui/src/history_cell/notices.rs \
+printf "Patch #6b (Fork Identity + Release Notice): "
+if grep -q 'inchury/codex-termux/releases/latest' codex-rs/cli/src/doctor/updates.rs \
+  && grep -q 'inchury/codex-termux/releases/latest' codex-rs/tui/src/update_prompt.rs \
   && grep -Fq '#[cfg(not(test))]' codex-rs/tui/src/version.rs \
   && grep -Fq '#[cfg(test)]' codex-rs/tui/src/version.rs \
-  && grep -Fq 'pub const CODEX_CLI_VERSION: &str = "0.0.0";' codex-rs/tui/src/version.rs \
-  && ! grep -R -q "api.github.com/repos/openai/codex\|@openai%2fcodex\|@openai/codex" \
-      codex-rs/cli/src/doctor/updates.rs \
-      codex-rs/cli/src/doctor.rs \
-      codex-rs/tui/src/npm_registry.rs \
-      codex-rs/tui/src/update_prompt.rs \
-      codex-rs/tui/src/history_cell/notices.rs; then
+  && ! grep -R -q 'DioNanos/codex-termux' codex-rs/tui/src/updates.rs codex-rs/tui/src/update_prompt.rs codex-rs/cli/src/doctor/updates.rs; then
   pass
 else
   fail
