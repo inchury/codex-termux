@@ -227,13 +227,9 @@ jobs:
                             '''        Err(std::fs::TryLockError::Error(io_err)) if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),''', 1)
           old = '    lock_file.try_lock()?;'
           new = """    if let Err(err) = lock_file.try_lock() {
-              match err {
-                  std::fs::TryLockError::Error(ref io_err)
-                      if is_unsupported_file_lock_error(io_err) => {}
-                  std::fs::TryLockError::WouldBlock => {
-                      return Err(std::io::ErrorKind::WouldBlock.into());
-                  }
-                  std::fs::TryLockError::Error(io_err) => return Err(io_err),
+              let io_err: std::io::Error = err.into();
+              if !is_unsupported_file_lock_error(&io_err) {
+                  return Err(io_err);
               }
           }"""
           if old in s:
@@ -315,38 +311,19 @@ jobs:
           p.write_text(s)
           PY
 
-          # Repoint update checks/actions to this fork on the rebased upstream tree.
-          # Do not overwrite whole Rust files with older main-branch versions.
-          python3 - <<'PY'
-          from pathlib import Path
-
-          replacements = {
-              "codex-rs/tui/src/updates.rs": [
-                  ("DioNanos/codex-termux", "inchury/codex-termux"),
-                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
-              ],
-              "codex-rs/cli/src/doctor/updates.rs": [
-                  ("DioNanos/codex-termux", "inchury/codex-termux"),
-                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
-                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
-              ],
-              "codex-rs/tui/src/npm_registry.rs": [
-                  ("@mmmbuto%2fcodex-cli-termux", "@inchury%2fcodex-cli-termux"),
-                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
-              ],
-              "codex-rs/tui/src/update_action.rs": [
-                  ("@mmmbuto/codex-cli-termux", "@inchury/codex-cli-termux"),
-              ],
-          }
-          for filename, pairs in replacements.items():
-              path = Path(filename)
-              content = path.read_text()
-              for old, new in pairs:
-                  if old not in content and new not in content:
-                      raise SystemExit(f"Missing update-channel anchor: {filename}: {old}")
-                  content = content.replace(old, new)
-              path.write_text(content)
-          PY
+          # Keep update notifications in sync with this fork's GitHub-only policy.
+          # The compatibility release still contains the older npm update UI.
+          git checkout origin/main -- \
+            codex-rs/tui/src/updates.rs \
+            codex-rs/tui/src/update_prompt.rs \
+            codex-rs/tui/src/updates_cache.rs \
+            codex-rs/tui/src/update_versions.rs \
+            codex-rs/tui/src/update_action.rs \
+            codex-rs/cli/src/doctor/updates.rs \
+            codex-rs/cli/src/doctor.rs \
+            codex-rs/tui/src/npm_registry.rs \
+            codex-rs/tui/src/history_cell/notices.rs \
+            codex-rs/tui/src/version.rs
 
           # Fork-owned release infrastructure is maintained on our main branch,
           # not inherited from the historical source release.
