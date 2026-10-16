@@ -166,7 +166,7 @@ jobs:
 
           p = Path("codex-rs/core/Cargo.toml")
           s = p.read_text()
-          section = '[target.aarch64-linux-android.dependencies]\\nopenssl-sys = { workspace = true, features = ["vendored"] }\\n\\n'
+          section = '[target.aarch64-linux-android.dependencies]\nopenssl-sys = { workspace = true, features = ["vendored"] }\n\n'
           if '[target.aarch64-linux-android.dependencies]' not in s:
               anchor = '[dev-dependencies]'
               if s.count(anchor) != 1:
@@ -185,7 +185,7 @@ jobs:
               anchor = 'const LOCK_FILENAME: &str = ".lock";'
               if s.count(anchor) != 1:
                   raise SystemExit("arg0 lock helper anchor mismatch")
-              s = s.replace(anchor, anchor + "\\n\\n" + helper, 1)
+              s = s.replace(anchor, anchor + "\n\n" + helper, 1)
           old = '    lock_file.try_lock()?;'
           new = """    if let Err(err) = lock_file.try_lock() {
               match err {
