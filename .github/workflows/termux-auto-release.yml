@@ -303,6 +303,21 @@ jobs:
             codex-rs/tui/src/npm_registry.rs \
             codex-rs/tui/src/version.rs
 
+          # Codex 0.163 changed ServerOverloaded into a struct variant.
+          # Preserve the fork doctor implementation while adapting the match.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("codex-rs/cli/src/doctor.rs")
+          s = p.read_text()
+          old = "ApiError::ServerOverloaded =>"
+          new = "ApiError::ServerOverloaded { .. } =>"
+          if old in s:
+              s = s.replace(old, new)
+          elif new not in s:
+              raise SystemExit("doctor ServerOverloaded variant anchor missing")
+          p.write_text(s)
+          PY
+
           # Fork-owned release infrastructure is maintained on our main branch,
           # not inherited from the historical source release.
           git checkout origin/main -- \
