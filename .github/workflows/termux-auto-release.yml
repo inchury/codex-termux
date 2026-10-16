@@ -205,26 +205,6 @@ jobs:
               s = s.replace(anchor, resolver + anchor, 1)
           s = s.replace('let exe = std::env::current_exe()?;',
                         'let exe = resolve_codex_self_exe().ok_or(std::io::ErrorKind::NotFound)?;', 1)
-          if 'if !is_unsupported_file_lock_error(&io_err)' not in s:
-              s = s.replace('''    if let Err(err) = lock_file.try_lock() {
-              match err {
-                  std::fs::TryLockError::Error(ref io_err)
-                      if is_unsupported_file_lock_error(io_err) => {}
-                  std::fs::TryLockError::WouldBlock => {
-                      return Err(std::io::ErrorKind::WouldBlock.into());
-                  }
-                  std::fs::TryLockError::Error(io_err) => return Err(io_err),
-              }
-          }''', '''    if let Err(err) = lock_file.try_lock() {
-              let io_err: std::io::Error = err.into();
-              if !is_unsupported_file_lock_error(&io_err) {
-                  return Err(io_err);
-              }
-          }''', 1)
-          if 'if is_unsupported_file_lock_error(&io_err)' not in s:
-              s = s.replace('''        Err(std::fs::TryLockError::Error(io_err))
-              if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),''',
-                            '''        Err(std::fs::TryLockError::Error(io_err)) if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),''', 1)
           old = '    lock_file.try_lock()?;'
           new = """    if let Err(err) = lock_file.try_lock() {
               let io_err: std::io::Error = err.into();
@@ -238,8 +218,7 @@ jobs:
               raise SystemExit("arg0 try_lock anchor mismatch")
           old = '        Err(std::fs::TryLockError::WouldBlock) => Ok(None),'
           if old in s and 'if is_unsupported_file_lock_error(&io_err)' not in s:
-              s = s.replace(old, old + """\n        Err(std::fs::TryLockError::Error(io_err))
-              if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),""", 1)
+              s = s.replace(old, old + """\n        Err(std::fs::TryLockError::Error(io_err)) if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),""", 1)
           p.write_text(s)
           PY
 
