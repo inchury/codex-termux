@@ -19,3 +19,16 @@ If a pinned Android patch stops applying to a new upstream release, candidate pr
 ## Verification status
 
 The pipeline has been rewritten, and the nine snapshot patch files were compared against the upstream 0.163.0 source for unchanged hunk context. A full GitHub Actions build and Termux device smoke test remain required before declaring the release verified.
+
+## Self-hosted rusty_v8 requirement
+
+The repository's current V8 manifest still contains historical DioNanos download URLs. The automated Codex release now **fails closed** if the selected V8 entry does not point to `inchury/codex-termux`. Never rewrite the repository name while retaining another publisher's hashes.
+
+To bootstrap the required 150.4.0 prebuild:
+
+1. Run `rusty-v8-android-release` with `v8_version=150.4.0`, `target=aarch64-linux-android`, `sandbox=true`, `publish_release=true`.
+2. Confirm the job completed and the `rusty-v8-v150.4.0` release contains the archive, Rust binding and SHA256 file.
+3. Audit the produced checksums and set the 150.4.0 manifest target `repository = "inchury/codex-termux"` and profile checksum values to those **actually produced**.
+4. Only then rerun `termux-auto-release`.
+
+The V8 job is expensive and is not started implicitly by the Codex release job. No successful self-hosted V8 build or end-to-end Codex release has been verified as part of this refactor.
