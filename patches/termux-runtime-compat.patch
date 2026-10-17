@@ -1,0 +1,706 @@
+diff --git a/codex-rs/core/src/installation_id.rs b/codex-rs/core/src/installation_id.rs
+--- a/codex-rs/core/src/installation_id.rs
++++ b/codex-rs/core/src/installation_id.rs
+@@ -1,4 +1,5 @@
+ use std::fs::OpenOptions;
++use std::io::ErrorKind;
+ use std::io::Read;
+ use std::io::Result;
+ use std::io::Seek;
+@@ -16,6 +17,16 @@ use uuid::Uuid;
+ 
+ pub(crate) const INSTALLATION_ID_FILENAME: &str = "installation_id";
+ 
++fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
++    // Filesystems that do not support advisory file locking (observed on
++    // Termux storage backends under `/data/data/com.termux/files`) surface
++    // `ErrorKind::Unsupported` from `File::lock`. Detect this on every
++    // target rather than gating on `cfg!(target_os = "android")`: support
++    // for the affected filesystem behavior is a runtime property, and this
++    // also covers older Termux package lines.
++    err.kind() == ErrorKind::Unsupported
++}
++
+ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<String> {
+     let path = codex_home.join(INSTALLATION_ID_FILENAME);
+     fs::create_dir_all(codex_home).await?;
+@@ -29,7 +40,11 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
+         }
+ 
+         let mut file = options.open(&path)?;
+-        file.lock()?;
++        if let Err(err) = file.lock()
++            && !is_unsupported_file_lock_error(&err)
++        {
++            return Err(err);
++        }
+ 
+         #[cfg(unix)]
+         {
+@@ -66,6 +81,7 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
+ #[cfg(test)]
+ mod tests {
+     use super::INSTALLATION_ID_FILENAME;
++    use super::is_unsupported_file_lock_error;
+     use super::resolve_installation_id;
+     use core_test_support::PathExt;
+     use pretty_assertions::assert_eq;
+@@ -146,4 +162,16 @@ mod tests {
+             resolved
+         );
+     }
++
++    #[test]
++    fn unsupported_file_lock_classifier_accepts_unsupported_kind() {
++        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
++        assert!(is_unsupported_file_lock_error(&unsupported));
++    }
++
++    #[test]
++    fn unsupported_file_lock_classifier_rejects_other_kinds() {
++        let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
++        assert!(!is_unsupported_file_lock_error(&other));
++    }
+ }
+diff --git a/codex-rs/execpolicy/src/amend.rs b/codex-rs/execpolicy/src/amend.rs
+--- a/codex-rs/execpolicy/src/amend.rs
++++ b/codex-rs/execpolicy/src/amend.rs
+@@ -60,6 +60,43 @@ pub enum AmendError {
+     },
+ }
+ 
++/// Filesystems that do not support advisory file locking (observed on
++/// Termux storage backends under `/data/data/com.termux/files`) surface
++/// `ErrorKind::Unsupported` from `File::lock`. Detect this on every
++/// target rather than gating on `cfg!(target_os = "android")`: the filesystem
++/// behavior is a runtime property, and this also covers older Termux package
++/// lines.
++fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
++    err.kind() == std::io::ErrorKind::Unsupported
++}
++
++#[cfg(test)]
++mod unsupported_lock_helper_tests {
++    use super::is_unsupported_file_lock_error;
++    use std::io::Error;
++    use std::io::ErrorKind;
++
++    #[test]
++    fn unsupported_kind_is_classified_as_unsupported_lock_error() {
++        assert!(is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::Unsupported
++        )));
++    }
++
++    #[test]
++    fn other_kinds_are_not_classified_as_unsupported_lock_error() {
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::PermissionDenied
++        )));
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::NotFound
++        )));
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::WouldBlock
++        )));
++    }
++}
++
+ /// Note this thread uses advisory file locking and performs blocking I/O, so it should be used with
+ /// [`tokio::task::spawn_blocking`] when called from an async context.
+ pub fn blocking_append_allow_prefix_rule(
+@@ -154,10 +191,20 @@ fn append_locked_line(policy_path: &Path, line: &str) -> Result<(), AmendError>
+             path: policy_path.to_path_buf(),
+             source,
+         })?;
+-    file.lock().map_err(|source| AmendError::LockPolicyFile {
+-        path: policy_path.to_path_buf(),
+-        source,
+-    })?;
++    if let Err(source) = file.lock()
++        && !is_unsupported_file_lock_error(&source)
++    {
++        return Err(AmendError::LockPolicyFile {
++            path: policy_path.to_path_buf(),
++            source,
++        });
++    }
++    // Filesystems that do not support advisory file locking (observed on
++    // Termux storage backends under `/data/data/com.termux/files`) surface
++    // `ErrorKind::Unsupported` from `File::lock`. Append to the policy file
++    // without exclusion in that case. Deduplication remains best-effort when
++    // concurrent writers cannot be serialized; duplicate equivalent rules are
++    // preferable to making policy persistence unusable on those filesystems.
+ 
+     file.seek(SeekFrom::Start(0))
+         .map_err(|source| AmendError::SeekPolicyFile {
+diff --git a/codex-rs/login/src/server.rs b/codex-rs/login/src/server.rs
+--- a/codex-rs/login/src/server.rs
++++ b/codex-rs/login/src/server.rs
+@@ -202,7 +202,16 @@ pub fn run_login_server(opts: ServerOptions) -> io::Result<LoginServer> {
+     )?;
+ 
+     if opts.open_browser {
+-        let _ = webbrowser::open(&auth_url);
++        #[cfg(target_os = "android")]
++        {
++            let _ = std::process::Command::new("termux-open-url")
++                .arg(&auth_url)
++                .status();
++        }
++        #[cfg(not(target_os = "android"))]
++        {
++            let _ = webbrowser::open(&auth_url);
++        }
+     }
+ 
+     // Map blocking reads from server.recv() to an async channel.
+diff --git a/codex-rs/message-history/src/batch.rs b/codex-rs/message-history/src/batch.rs
+--- a/codex-rs/message-history/src/batch.rs
++++ b/codex-rs/message-history/src/batch.rs
+@@ -14,6 +14,7 @@ use super::HistoryEntry;
+ use super::MAX_RETRIES;
+ use super::RETRY_SLEEP;
+ use super::history_filepath;
++use super::is_unsupported_file_lock_error;
+ use super::log_identity;
+ 
+ const MAX_BATCH_ROWS: usize = 128;
+@@ -124,6 +125,14 @@ pub fn lookup_batch(
+         match file.try_lock_shared() {
+             Ok(()) => return scan_batch(&mut file, cursor, config),
+             Err(std::fs::TryLockError::WouldBlock) => std::thread::sleep(RETRY_SLEEP),
++            Err(std::fs::TryLockError::Error(ref error))
++                if is_unsupported_file_lock_error(error) =>
++            {
++                // Termux storage and other backends may reject advisory
++                // file locking. Batch reads remain bounded and tolerate a
++                // malformed final JSONL row, so proceed without the lock.
++                return scan_batch(&mut file, cursor, config);
++            }
+             Err(error) => return Err(error.into()),
+         }
+     }
+diff --git a/codex-rs/message-history/src/lib.rs b/codex-rs/message-history/src/lib.rs
+--- a/codex-rs/message-history/src/lib.rs
++++ b/codex-rs/message-history/src/lib.rs
+@@ -11,8 +11,8 @@
+ //! To minimize the chance of interleaved writes when multiple processes are
+ //! appending concurrently, callers should *prepare the full line* (record +
+ //! trailing `\n`) and write it with a **single `write(2)` system call** while
+-//! the file descriptor is opened with the `O_APPEND` flag. POSIX guarantees
+-//! that writes up to `PIPE_BUF` bytes are atomic in that case.
++//! the file descriptor is opened with the `O_APPEND` flag. On Linux/Android,
++//! this keeps each append contiguous even when advisory locks are unavailable.
+ 
+ use std::fs::File;
+ use std::fs::OpenOptions;
+@@ -58,6 +58,47 @@ const HISTORY_SOFT_CAP_RATIO: f64 = 0.8;
+ const MAX_RETRIES: usize = 10;
+ const RETRY_SLEEP: Duration = Duration::from_millis(100);
+ 
++/// Filesystems that do not support advisory file locking (observed on
++/// Termux storage backends under `/data/data/com.termux/files`) surface
++/// `ErrorKind::Unsupported` from `File::try_lock` / `File::try_lock_shared`.
++/// Detect this on every target rather than gating on `cfg!(target_os = "android")`:
++/// the filesystem behavior is a runtime property, and this also covers older
++/// Termux package lines.
++/// When this is true, callers should proceed without the advisory lock instead
++/// of failing the operation. The single-write O_APPEND contract documented at
++/// the top of this file keeps individual lines intact on Linux/Android even
++/// without exclusion.
++fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
++    err.kind() == std::io::ErrorKind::Unsupported
++}
++
++#[cfg(test)]
++mod unsupported_lock_helper_tests {
++    use super::is_unsupported_file_lock_error;
++    use std::io::Error;
++    use std::io::ErrorKind;
++
++    #[test]
++    fn unsupported_kind_is_classified_as_unsupported_lock_error() {
++        assert!(is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::Unsupported
++        )));
++    }
++
++    #[test]
++    fn other_kinds_are_not_classified_as_unsupported_lock_error() {
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::PermissionDenied
++        )));
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::NotFound
++        )));
++        assert!(!is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::WouldBlock
++        )));
++    }
++}
++
+ #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+ pub struct HistoryEntry {
+     pub session_id: String,
+@@ -161,21 +202,38 @@ pub async fn append_entry(
+         // Retry a few times to avoid indefinite blocking when contended.
+         for _ in 0..MAX_RETRIES {
+             match history_file.try_lock() {
+-                Ok(()) => {
+-                    // While holding the exclusive lock, write the full line.
+-                    // We do not open the file with `append(true)` on Windows, so ensure the
+-                    // cursor is positioned at the end before writing.
+-                    history_file.seek(SeekFrom::End(0))?;
+-                    history_file.write_all(line.as_bytes())?;
+-                    history_file.flush()?;
+-                    enforce_history_limit(&mut history_file, history_max_bytes)?;
+-                    return Ok(());
+-                }
++                Ok(()) => {}
+                 Err(std::fs::TryLockError::WouldBlock) => {
+                     std::thread::sleep(RETRY_SLEEP);
++                    continue;
++                }
++                Err(std::fs::TryLockError::Error(ref e)) if is_unsupported_file_lock_error(e) => {
++                    // Termux storage and other backends that reject advisory
++                    // file locking. Proceed without the exclusive lock; the
++                    // single-write O_APPEND contract documented at the top of
++                    // this file keeps each line intact under concurrent writes
++                    // on Linux/Android.
+                 }
+                 Err(e) => return Err(e.into()),
+             }
++            // While holding the exclusive lock (or after detecting the
++            // filesystem cannot provide one), write the full line. We do not
++            // open the file with `append(true)` on Windows, so ensure the
++            // cursor is positioned at the end before writing.
++            history_file.seek(SeekFrom::End(0))?;
++            let written = history_file.write(line.as_bytes())?;
++            if written != line.len() {
++                return Err(std::io::Error::new(
++                    std::io::ErrorKind::WriteZero,
++                    format!(
++                        "partial history append: wrote {written} of {} bytes",
++                        line.len()
++                    ),
++                ));
++            }
++            history_file.flush()?;
++            enforce_history_limit(&mut history_file, history_max_bytes)?;
++            return Ok(());
+         }
+ 
+         Err(std::io::Error::new(
+@@ -382,41 +440,47 @@ fn lookup_history_entry(path: &Path, log_id: u64, offset: usize) -> Option<Histo
+     // Open & lock file for reading using a shared lock.
+     // Retry a few times to avoid indefinite blocking.
+     for _ in 0..MAX_RETRIES {
+-        let lock_result = file.try_lock_shared();
+-
+-        match lock_result {
+-            Ok(()) => {
+-                let reader = BufReader::new(&file);
+-                for (idx, line_res) in reader.lines().enumerate() {
+-                    let line = match line_res {
+-                        Ok(l) => l,
+-                        Err(e) => {
+-                            tracing::warn!(error = %e, "failed to read line from history file");
+-                            return None;
+-                        }
+-                    };
+-
+-                    if idx == offset {
+-                        match serde_json::from_str::<HistoryEntry>(&line) {
+-                            Ok(entry) => return Some(entry),
+-                            Err(e) => {
+-                                tracing::warn!(error = %e, "failed to parse history entry");
+-                                return None;
+-                            }
+-                        }
+-                    }
+-                }
+-                // Not found at requested offset.
+-                return None;
+-            }
++        match file.try_lock_shared() {
++            Ok(()) => {}
+             Err(std::fs::TryLockError::WouldBlock) => {
+                 std::thread::sleep(RETRY_SLEEP);
++                continue;
++            }
++            Err(std::fs::TryLockError::Error(ref e)) if is_unsupported_file_lock_error(e) => {
++                // Termux storage and other backends that reject advisory
++                // file locking. Proceed without the shared lock; concurrent
++                // appends may rarely produce a torn final line which the
++                // JSON-Lines parser already tolerates by warning and
++                // returning None.
+             }
+             Err(e) => {
+                 tracing::warn!(error = %e, "failed to acquire shared lock on history file");
+                 return None;
+             }
+         }
++
++        let reader = BufReader::new(&file);
++        for (idx, line_res) in reader.lines().enumerate() {
++            let line = match line_res {
++                Ok(l) => l,
++                Err(e) => {
++                    tracing::warn!(error = %e, "failed to read line from history file");
++                    return None;
++                }
++            };
++
++            if idx == offset {
++                match serde_json::from_str::<HistoryEntry>(&line) {
++                    Ok(entry) => return Some(entry),
++                    Err(e) => {
++                        tracing::warn!(error = %e, "failed to parse history entry");
++                        return None;
++                    }
++                }
++            }
++        }
++        // Not found at requested offset.
++        return None;
+     }
+ 
+     None
+diff --git a/codex-rs/rmcp-client/src/utils.rs b/codex-rs/rmcp-client/src/utils.rs
+--- a/codex-rs/rmcp-client/src/utils.rs
++++ b/codex-rs/rmcp-client/src/utils.rs
+@@ -18,9 +18,15 @@ pub(crate) fn create_env_for_mcp_server(
+     env_vars: &[McpServerEnvVar],
+ ) -> Result<HashMap<OsString, OsString>> {
+     let additional_env_vars = local_stdio_env_var_names(env_vars)?;
++    let termux_env_vars: &[&str] = if running_on_termux() {
++        TERMUX_ENV_VARS
++    } else {
++        &[]
++    };
+     let mut env: HashMap<OsString, OsString> = DEFAULT_ENV_VARS
+         .iter()
+         .copied()
++        .chain(termux_env_vars.iter().copied())
+         .chain(additional_env_vars)
+         .filter_map(|var| env::var_os(var).map(|value| (OsString::from(var), value)))
+         .collect();
+@@ -58,6 +64,25 @@ pub(crate) fn create_env_for_mcp_server(
+     Ok(env)
+ }
+ 
++/// codex-termux GitHub issue #10 fix — detect Termux at runtime via the
++/// `TERMUX_VERSION` environment variable (set by Termux init scripts and
++/// not present on ordinary Linux distributions). Runtime detection keeps the
++/// behavior tied to the Termux environment and also covers older package
++/// lines that did not use the current Android target triple.
++fn running_on_termux() -> bool {
++    env::var_os("TERMUX_VERSION").is_some()
++}
++
++// The codex-termux issue #11 TLS fix used to live here: it wrapped the
++// `reqwest` client this crate built for OAuth discovery so that Termux got
++// explicit webpki roots instead of `rustls-platform-verifier`, which panics on
++// Android without a JVM `Context`. Upstream 0.147.0 removed that client — MCP
++// OAuth discovery now runs on the injected `codex-http-client`, and `reqwest`
++// is no longer a dependency of this crate — so there is nothing left here to
++// wrap and the panicking verifier is never constructed on this path. Whether
++// the replacement's native root store works under Termux is a separate
++// question about `codex-http-client`, not about this file.
++
+ pub(crate) fn create_env_overlay_for_remote_mcp_server(
+     extra_env: Option<HashMap<OsString, OsString>>,
+     env_vars: &[McpServerEnvVar],
+@@ -174,6 +199,46 @@ pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
+     "TZ",
+ ];
+ 
++/// Termux-specific environment variables required by tools spawned under
++/// `/data/data/com.termux/files`. Without these, `npx`, `npm`, `pip`, and
++/// most native helpers either fail to find their interpreters/caches
++/// (`PREFIX`, `NPM_CONFIG_PREFIX`), crash because the dynamic linker
++/// shim is missing (`LD_PRELOAD`), or load the wrong system libraries
++/// (`LD_LIBRARY_PATH`). Only chained into the allowlist when
++/// `running_on_termux()` returns true.
++///
++/// Fix for GitHub `DioNanos/codex-termux` issue #10 — `MCP client for
++/// context7 failed to start: MCP startup failed: handshaking with MCP
++/// server failed: connection closed: initialize response` when the MCP
++/// server is configured via `npx`.
++#[cfg(unix)]
++pub(crate) const TERMUX_ENV_VARS: &[&str] = &[
++    "PREFIX",
++    "TERMUX_VERSION",
++    "TERMUX_APP_PID",
++    "TERMUX_MAIN_PACKAGE_FORMAT",
++    "LD_PRELOAD",
++    "LD_LIBRARY_PATH",
++    "NPM_CONFIG_PREFIX",
++    "ANDROID_DATA",
++    "ANDROID_ROOT",
++    "ANDROID_RUNTIME_ROOT",
++    "BOOTCLASSPATH",
++    "XDG_RUNTIME_DIR",
++    "XDG_DATA_HOME",
++    "XDG_CACHE_HOME",
++    "XDG_CONFIG_HOME",
++];
++
++/// Windows builds of codex-termux never run under Termux (Termux is
++/// Android/Linux with Bionic) so the allowlist is empty. Declared explicitly so
++/// that `create_env_for_mcp_server` resolves the name on every target —
++/// without this, the non-Unix typecheck of the function body would fail
++/// with `unresolved name TERMUX_ENV_VARS` (caught in the 0.134.1
++/// pre-build review, 2026-05-27).
++#[cfg(not(unix))]
++pub(crate) const TERMUX_ENV_VARS: &[&str] = &[];
++
+ #[cfg(windows)]
+ pub(crate) const DEFAULT_ENV_VARS: &[&str] =
+     codex_protocol::shell_environment::WINDOWS_CORE_ENV_VARS;
+@@ -339,6 +404,48 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    #[serial(extra_rmcp_env)]
++    fn create_env_propagates_termux_vars_when_termux_version_is_set() {
++        // GitHub DioNanos/codex-termux issue #10 regression guard.
++        let _termux_guard = EnvVarGuard::set("TERMUX_VERSION", "0.118.3");
++        let prefix_value = OsString::from("/data/data/com.termux/files/usr");
++        let _prefix_guard = EnvVarGuard::set("PREFIX", &prefix_value);
++
++        let env =
++            create_env_for_mcp_server(/*extra_env*/ None, &[]).expect("local MCP env should build");
++
++        assert_eq!(env.get(OsStr::new("PREFIX")), Some(&prefix_value));
++        assert_eq!(
++            env.get(OsStr::new("TERMUX_VERSION")),
++            Some(&OsString::from("0.118.3"))
++        );
++    }
++
++    #[test]
++    #[serial(extra_rmcp_env)]
++    fn create_env_does_not_leak_termux_vars_off_termux() {
++        // Without TERMUX_VERSION set, PREFIX from the host shell must NOT
++        // accidentally propagate to spawned MCP servers (Linux desktops
++        // often use PREFIX for unrelated build-tool conventions).
++        let original_termux = std::env::var_os("TERMUX_VERSION");
++        unsafe {
++            std::env::remove_var("TERMUX_VERSION");
++        }
++        let _prefix_guard = EnvVarGuard::set("PREFIX", "/opt/leaked");
++
++        let env =
++            create_env_for_mcp_server(/*extra_env*/ None, &[]).expect("local MCP env should build");
++
++        assert_eq!(env.get(OsStr::new("PREFIX")), None);
++
++        if let Some(value) = original_termux {
++            unsafe {
++                std::env::set_var("TERMUX_VERSION", value);
++            }
++        }
++    }
++
+     #[cfg(unix)]
+     #[test]
+     #[serial(extra_rmcp_env)]
+diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_lock.rs
+--- a/codex-rs/rollout/src/writer_lock.rs
++++ b/codex-rs/rollout/src/writer_lock.rs
+@@ -17,6 +17,22 @@ use tracing::warn;
+ const WRITER_LOCK_DIR: &str = "thread-writer-locks";
+ const COORDINATION_LOCK_FILE: &str = ".coordination.lock";
+ 
++/// Filesystems that do not support advisory file locking (observed on
++/// Termux storage backends under `/data/data/com.termux/files`) surface
++/// `ErrorKind::Unsupported` from `File::lock` / `File::try_lock`.
++/// Detect this on every target rather than gating on `cfg!(target_os = "android")`:
++/// the filesystem behavior is a runtime property, and this also covers older
++/// Termux package lines.
++///
++/// Where it is true the writer lock cannot be taken at all, so single-writer
++/// ownership stops being enforced and concurrent writers to one thread are no
++/// longer detected. That is the deliberate trade: without this the store
++/// cannot open a thread on those filesystems, which takes the whole CLI down
++/// at startup rather than weakening a guarantee.
++fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
++    err.kind() == std::io::ErrorKind::Unsupported
++}
++
+ /// Coordinates writer ownership within one Codex home.
+ pub struct WriterLockCoordinator {
+     directory: PathBuf,
+@@ -70,6 +86,10 @@ impl WriterLockCoordinator {
+                     format!("thread {thread_id} already has an active writer"),
+                 ));
+             }
++            Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                // No advisory locking on this filesystem: proceed unlocked
++                // rather than refuse to open the thread.
++            }
+             Err(std::fs::TryLockError::Error(err)) => {
+                 return Err(io::Error::other(format!(
+                     "failed to acquire thread writer lock {}: {err}",
+@@ -98,6 +118,15 @@ impl WriterLockCoordinator {
+             Ok(file) => match file.try_lock() {
+                 Ok(()) => Ok(Some(coordination_lock)),
+                 Err(std::fs::TryLockError::WouldBlock) => Ok(None),
++                Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                    // No advisory locking on this filesystem: ownership cannot
++                    // be probed, so publish unlocked rather than refuse the
++                    // rollout.
++                    warn!(
++                        "thread writer lock unsupported on this filesystem; publishing {thread_id} without lock"
++                    );
++                    Ok(Some(coordination_lock))
++                }
+                 Err(std::fs::TryLockError::Error(err)) => Err(err),
+             },
+             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(coordination_lock)),
+@@ -113,11 +142,13 @@ impl WriterLockCoordinator {
+             .create(true)
+             .truncate(false)
+             .open(self.directory.join(COORDINATION_LOCK_FILE))?;
+-        file.lock().map_err(|err| {
+-            io::Error::other(format!(
++        if let Err(err) = file.lock()
++            && !is_unsupported_file_lock_error(&err)
++        {
++            return Err(io::Error::other(format!(
+                 "failed to acquire thread writer coordination lock: {err}"
+-            ))
+-        })?;
++            )));
++        }
+         Ok(file)
+     }
+ 
+@@ -159,6 +190,10 @@ impl WriterLockCoordinator {
+                     }
+                 }
+                 Err(std::fs::TryLockError::WouldBlock) => {}
++                Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                    // No advisory locking on this filesystem: leave the stale
++                    // lock file alone rather than delete a file we cannot probe.
++                }
+                 Err(std::fs::TryLockError::Error(err)) => {
+                     warn!(
+                         "failed to inspect thread writer lock {}: {err}",
+@@ -195,6 +230,37 @@ impl Drop for WriterLockGuard {
+     }
+ }
+ 
++#[cfg(test)]
++mod unsupported_lock_helper_tests {
++    use super::is_unsupported_file_lock_error;
++    use std::io::Error;
++    use std::io::ErrorKind;
++
++    #[test]
++    fn unsupported_kind_is_classified_as_unsupported_lock_error() {
++        assert!(is_unsupported_file_lock_error(&Error::from(
++            ErrorKind::Unsupported
++        )));
++    }
++
++    #[test]
++    fn other_kinds_are_not_classified_as_unsupported_lock_error() {
++        // A real lock failure must stay fatal: degrading on these would hide
++        // a broken store behind a silently unlocked writer.
++        for kind in [
++            ErrorKind::PermissionDenied,
++            ErrorKind::NotFound,
++            ErrorKind::WouldBlock,
++            ErrorKind::Other,
++        ] {
++            assert!(
++                !is_unsupported_file_lock_error(&Error::from(kind)),
++                "{kind:?} must not be treated as an unsupported lock"
++            );
++        }
++    }
++}
++
+ #[cfg(test)]
+ #[path = "writer_lock_tests.rs"]
+ mod tests;
+diff --git a/codex-rs/tui/src/clipboard_paste.rs b/codex-rs/tui/src/clipboard_paste.rs
+--- a/codex-rs/tui/src/clipboard_paste.rs
++++ b/codex-rs/tui/src/clipboard_paste.rs
+@@ -4,6 +4,7 @@ pub(crate) mod text;
+ 
+ use std::path::Path;
+ use std::path::PathBuf;
++#[cfg(not(target_os = "android"))]
+ use tempfile::Builder;
+ 
+ #[derive(Debug, Clone)]
+diff --git a/codex-rs/utils/pty/src/pty.rs b/codex-rs/utils/pty/src/pty.rs
+--- a/codex-rs/utils/pty/src/pty.rs
++++ b/codex-rs/utils/pty/src/pty.rs
+@@ -21,6 +21,61 @@ use std::sync::atomic::AtomicBool;
+ #[cfg(not(unix))]
+ use std::time::Duration;
+ 
++#[cfg(target_os = "android")]
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn openpty(
++    amaster: *mut libc::c_int,
++    aslave: *mut libc::c_int,
++    name: *mut libc::c_char,
++    termp: *const libc::termios,
++    winp: *const libc::winsize,
++) -> libc::c_int {
++    if amaster.is_null() || aslave.is_null() {
++        return -1;
++    }
++
++    let master = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
++    if master < 0 {
++        return -1;
++    }
++    if unsafe { libc::grantpt(master) } != 0 {
++        let _ = unsafe { libc::close(master) };
++        return -1;
++    }
++    if unsafe { libc::unlockpt(master) } != 0 {
++        let _ = unsafe { libc::close(master) };
++        return -1;
++    }
++
++    let mut buf = [0 as libc::c_char; 128];
++    if unsafe { libc::ptsname_r(master, buf.as_mut_ptr(), buf.len()) } != 0 {
++        let _ = unsafe { libc::close(master) };
++        return -1;
++    }
++
++    let slave = unsafe { libc::open(buf.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
++    if slave < 0 {
++        let _ = unsafe { libc::close(master) };
++        return -1;
++    }
++
++    if !termp.is_null() {
++        let _ = unsafe { libc::tcsetattr(slave, libc::TCSAFLUSH, termp) };
++    }
++    if !winp.is_null() {
++        let _ = unsafe { libc::ioctl(slave, libc::TIOCSWINSZ, winp) };
++    }
++    if !name.is_null() {
++        let _ = unsafe { libc::strcpy(name, buf.as_ptr()) };
++    }
++
++    unsafe {
++        *amaster = master;
++        *aslave = slave;
++    }
++    0
++}
++
+ use anyhow::Result;
+ use portable_pty::CommandBuilder;
+ #[cfg(not(windows))]
