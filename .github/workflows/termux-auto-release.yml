@@ -86,77 +86,17 @@ jobs:
             git remote add termux-source https://github.com/inchury/codex-termux.git
           fi
 
-          # Use the last published Termux release as the compatibility-delta
-          # source. We do NOT merge its branch wholesale: that branch also
-          # followed unreleased upstream development commits.
-          termux_source_tag="$(gh api repos/${GITHUB_REPOSITORY}/releases/latest --jq '.tag_name')"
-          if ! [[ "${termux_source_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-termux\.[0-9]+$ ]]; then
-            echo "Unexpected Termux source release tag: ${termux_source_tag}" >&2
-            exit 1
-          fi
-          echo "termux_source_tag=${termux_source_tag}" >> "${GITHUB_OUTPUT}"
-
-          git fetch --force --no-tags termux-source             "refs/tags/${termux_source_tag}:refs/remotes/termux-source/release"
-
-          termux_base_tag="$(git show refs/remotes/termux-source/release:npm-package/package.json |             node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const p=JSON.parse(s);const m=(p.description||"").match(/rust-v[0-9]+\.[0-9]+\.[0-9]+/);if(!m)process.exit(2);process.stdout.write(m[0]);})')"
-          echo "termux_base_tag=${termux_base_tag}" >> "${GITHUB_OUTPUT}"
-          echo "Termux compatibility source: ${termux_source_tag} based on ${termux_base_tag}"
-
-          git fetch --force --no-tags upstream             "refs/tags/${termux_base_tag}:refs/tags/${termux_base_tag}"             "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
-
-          # Build an allowlisted compatibility delta (runtime contract v2). Never replay the complete
-          # historical fork diff: it contains unrelated upstream-era changes and
-          # silently reintroduces stale APIs when OpenAI changes internals.
-          termux_paths=(
-            codex-rs/login/src/server.rs
-            codex-rs/Cargo.toml
-            codex-rs/tui/src/updates.rs
-            codex-rs/tui/src/updates_cache.rs
-            codex-rs/tui/src/update_versions.rs
-            codex-rs/tui/src/update_action.rs
-            codex-rs/cli/src/doctor/updates.rs
-            codex-rs/cli/src/doctor.rs
-            codex-rs/tui/src/npm_registry.rs
-            codex-rs/tui/src/update_prompt.rs
-            codex-rs/tui/src/history_cell/notices.rs
-            codex-rs/tui/src/version.rs
-            npm-package/bin
-            npm-package/scripts/postinstall_termux_launcher.js
-            codex-rs/.cargo/config.toml
-            codex-rs/app-server-daemon/src/managed_install.rs
-            codex-rs/app-server-daemon/src/backend/pid.rs
-            codex-rs/app-server-daemon/src/lib.rs
-            codex-rs/core/src/installation_id.rs
-            codex-rs/rollout/src/writer_lock.rs
-            codex-rs/utils/pty/src/pty.rs
-            codex-rs/message-history/src/lib.rs
-            codex-rs/message-history/src/batch.rs
-            codex-rs/execpolicy/src/amend.rs
-            codex-rs/rmcp-client/src/utils.rs
-            codex-rs/tui/src/clipboard_paste.rs
-            codex-rs/code-mode-runtime/Cargo.toml
-            codex-rs/code-mode-host/Cargo.toml
-            codex-rs/code-mode/Cargo.toml
-          )
-
-          git diff --binary "${termux_base_tag}" refs/remotes/termux-source/release -- \
-            "${termux_paths[@]}" > "${RUNNER_TEMP}/termux-runtime.patch"
-
+          # The candidate starts from the official OpenAI release only.
+          # Android patches are a fixed, audited file maintained in this fork.
+          # No previous Termux release source is fetched or diffed.
+          git fetch --force --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+          cp patches/termux-runtime-compat.patch "${RUNNER_TEMP}/termux-runtime.patch"
           git checkout --detach "${upstream_tag}"
-
-          if [ -s "${RUNNER_TEMP}/termux-runtime.patch" ]; then
-            # 3-way apply is retained for genuine Termux hunks. A conflict here
-            # now means OpenAI changed code that we intentionally patch, so it is
-            # actionable rather than noise from unrelated fork history.
-            if ! git apply --3way --index "${RUNNER_TEMP}/termux-runtime.patch"; then
-              echo "A real Termux compatibility hunk no longer applies to ${upstream_tag}." >&2
-              git diff --name-only --diff-filter=U >&2 || true
-              exit 1
-            fi
-          else
-            echo "Termux runtime delta is unexpectedly empty." >&2
+          if ! git apply --check "${RUNNER_TEMP}/termux-runtime.patch"; then
+            echo "Android compatibility patch needs rebase onto ${upstream_tag}; stopping before build." >&2
             exit 1
           fi
+          git apply "${RUNNER_TEMP}/termux-runtime.patch"
 
           # Apply the two Android-specific compatibility adjustments directly
           # against the current upstream layout, rather than replaying stale
@@ -290,33 +230,8 @@ jobs:
           p.write_text(s)
           PY
 
-          # Keep update notifications in sync with this fork's GitHub-only policy.
-          # The compatibility release still contains the older npm update UI.
-          git checkout origin/main -- \
-            codex-rs/tui/src/updates.rs \
-            codex-rs/tui/src/update_prompt.rs \
-            codex-rs/tui/src/updates_cache.rs \
-            codex-rs/tui/src/update_versions.rs \
-            codex-rs/tui/src/update_action.rs \
-            codex-rs/cli/src/doctor/updates.rs \
-            codex-rs/cli/src/doctor.rs \
-            codex-rs/tui/src/npm_registry.rs \
-            codex-rs/tui/src/version.rs
-
-          # Codex 0.163 changed ServerOverloaded into a struct variant.
-          # Preserve the fork doctor implementation while adapting the match.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("codex-rs/cli/src/doctor.rs")
-          s = p.read_text()
-          old = "ApiError::ServerOverloaded =>"
-          new = "ApiError::ServerOverloaded { .. } =>"
-          if old in s:
-              s = s.replace(old, new)
-          elif new not in s:
-              raise SystemExit("doctor ServerOverloaded variant anchor missing")
-          p.write_text(s)
-          PY
+          # Deliberately keep the upstream TUI, doctor, and update code intact.
+          # The Termux release is distributed via GitHub, without source overlays.
 
           # Fork-owned release infrastructure is maintained on our main branch,
           # not inherited from the historical source release.
@@ -333,6 +248,10 @@ jobs:
             npm-package/NOTICE \
             verify-patches.sh \
             patches/README.md \
+            patches/termux-runtime-compat.patch \
+            scripts/verify-termux-runtime.sh \
+            patches/termux-runtime-compat.patch \
+            scripts/verify-termux-runtime.sh \
             scripts/fetch_rusty_v8_android.py \
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
@@ -436,7 +355,7 @@ jobs:
 
           # Validate the compatibility contract before spending runner time on
           # the Android build. Cargo-backed checks remain enabled here.
-          CODEX_PUBLIC_SANITIZED_TREE=1 TERMUX_AUTOPORT_RUNTIME_ONLY=1 bash verify-patches.sh
+          bash scripts/verify-termux-runtime.sh
 
           # These files are modified after git apply --index. Explicitly stage
           # the rebased changes or the candidate branch loses the Android fixes.
@@ -462,7 +381,7 @@ jobs:
           # Confirm the committed candidate still contains both compatibility shims.
           git show HEAD:codex-rs/cli/src/remote_control_cmd.rs | grep -q 'tempdir_in(std::env::temp_dir())'
           git show HEAD:codex-rs/app-server-transport/src/transport/unix_socket.rs | grep -q 'is_unsupported_file_lock_error'
-          CODEX_PUBLIC_SANITIZED_TREE=1 TERMUX_AUTOPORT_RUNTIME_ONLY=1 bash verify-patches.sh
+          bash scripts/verify-termux-runtime.sh
 
           # Push only a disposable candidate branch. main stays an automation/
           # maintenance branch; the successful release tag is the immutable
