@@ -235,6 +235,9 @@ jobs:
           # not inherited from the historical source release.
           git checkout origin/main -- \
             npm-package/package.json \
+            npm-package/bin \
+            npm-package/scripts/postinstall_termux_launcher.js \
+            codex-rs/.cargo/config.toml \
             README.md \
             docs/install.md \
             npm-package/README.md \
@@ -260,6 +263,11 @@ jobs:
           git rm -r -f --ignore-unmatch .github/workflows
           git checkout origin/main -- .github/workflows
           git add \
+            npm-package/bin \
+            npm-package/scripts/postinstall_termux_launcher.js \
+            codex-rs/.cargo/config.toml \
+            patches/termux-runtime-compat.patch \
+            scripts/verify-termux-runtime.sh \
             npm-package/package.json \
             README.md \
             docs/install.md \
@@ -271,6 +279,8 @@ jobs:
             npm-package/NOTICE \
             verify-patches.sh \
             patches/README.md \
+            patches/termux-runtime-compat.patch \
+            scripts/verify-termux-runtime.sh \
             scripts/fetch_rusty_v8_android.py \
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
