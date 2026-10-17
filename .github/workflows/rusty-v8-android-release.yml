@@ -28,6 +28,10 @@ name: rusty-v8-android-release
         options:
           - aarch64-linux-android
         default: aarch64-linux-android
+      publish_release:
+        description: "Publish verified artifacts to this repository GitHub Releases"
+        type: boolean
+        default: false
       sandbox:
         description: "Build with v8_enable_sandbox (code mode requires it since rust-v0.147.0)"
         type: boolean
@@ -41,7 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   actions: read
 
 jobs:
@@ -472,3 +476,29 @@ jobs:
         with:
           name: rusty-v8-android-${{ inputs.v8_version }}-${{ env.V8_PROFILE }}-${{ inputs.target }}
           path: dist/${{ inputs.target }}/*
+
+      - name: Publish audited Android V8 assets to this repository
+        if: ${{ inputs.publish_release && inputs.sandbox }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V8_VERSION: ${{ inputs.v8_version }}
+          TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${TARGET}" = "aarch64-linux-android"
+          test "${V8_PROFILE}" = "ptrcomp_sandbox_release"
+          tag="rusty-v8-v${V8_VERSION}"
+          stage="dist/${TARGET}"
+          (cd "${stage}" && sha256sum -c "rusty_v8_${V8_PROFILE}_${TARGET}.sha256")
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; refusing to replace immutable assets." >&2
+            exit 1
+          fi
+          gh release create "${tag}" \
+            "${stage}/librusty_v8_${V8_PROFILE}_${TARGET}.a.gz" \
+            "${stage}/src_binding_${V8_PROFILE}_${TARGET}.rs" \
+            "${stage}/rusty_v8_${V8_PROFILE}_${TARGET}.sha256" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Android rusty_v8 ${V8_VERSION} (sandbox)" \
+            --notes "Android ARM64 prebuild built from denoland/rusty_v8 tag v${V8_VERSION}. SHA256 manifest attached. Pin both checksums in third_party/v8/android-artifacts.toml after reviewing the release."
