@@ -340,6 +340,8 @@ jobs:
           manifest = tomllib.loads(Path("third_party/v8/android-artifacts.toml").read_text())
           try:
               target = manifest["versions"][version]["targets"]["aarch64-linux-android"]
+              if target.get("repository") != os.environ["GITHUB_REPOSITORY"]:
+                  raise SystemExit(f"Android rusty_v8 {version} is not hosted by this repository; build and publish it with rusty-v8-android-release, then pin its verified checksums")
               profile = target["profiles"]["ptrcomp_sandbox_release"]
               for key in ("archive_sha256", "binding_sha256"):
                   digest = profile[key]
