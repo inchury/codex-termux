@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
-echo "Checking isolated Termux runtime compatibility"
+cd "$(dirname "$0")/.."
+echo "Checking isolated Termux runtime compatibility from $(pwd)"
 test -f patches/termux-runtime-compat.patch
 test -f codex-rs/Cargo.toml
 test -f codex-rs/arg0/src/lib.rs
