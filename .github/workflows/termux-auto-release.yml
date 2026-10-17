@@ -78,12 +78,6 @@ jobs:
           else
             git remote add upstream https://github.com/openai/codex.git
           fi
-          if git remote get-url termux-source >/dev/null 2>&1; then
-            git remote set-url termux-source https://github.com/inchury/codex-termux.git
-          else
-            git remote add termux-source https://github.com/inchury/codex-termux.git
-          fi
-
           # The candidate starts from the official OpenAI release only.
           # Android patches are a fixed, audited file maintained in this fork.
           # No previous Termux release source is fetched or diffed.
@@ -363,8 +357,8 @@ jobs:
           # the Android build. Cargo-backed checks remain enabled here.
           bash scripts/verify-termux-runtime.sh
 
-          # These files are modified after git apply --index. Explicitly stage
-          # the rebased changes or the candidate branch loses the Android fixes.
+          # Stage only the Rust runtime changes made by the pinned Android patch
+          # and the small explicit compatibility adaptations.
           git add -u -- codex-rs
 
           # Verify the exact staged tree, not just the working directory.
