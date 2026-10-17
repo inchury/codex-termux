@@ -1,6 +1,9 @@
 name: termux-auto-release
 
 on:
+  push:
+    paths:
+      - ".github/termux-build-request.txt"
   schedule:
     # Check once daily. Never start a long Android build on every push.
     - cron: "23 2 * * *"
