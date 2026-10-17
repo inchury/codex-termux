@@ -365,15 +365,7 @@ jobs:
 
           # These files are modified after git apply --index. Explicitly stage
           # the rebased changes or the candidate branch loses the Android fixes.
-          git add -- \
-            codex-rs/cli/src/remote_control_cmd.rs \
-            codex-rs/app-server-transport/src/transport/unix_socket.rs \
-            codex-rs/arg0/src/lib.rs \
-            codex-rs/core/Cargo.toml \
-            codex-rs/tui/src/updates.rs \
-            codex-rs/cli/src/doctor/updates.rs \
-            codex-rs/tui/src/npm_registry.rs \
-            codex-rs/tui/src/update_action.rs
+          git add -u -- codex-rs
 
           # Verify the exact staged tree, not just the working directory.
           if ! git diff --quiet; then
