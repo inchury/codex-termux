@@ -25,8 +25,6 @@ jobs:
       upstream_tag: ${{ steps.prepare.outputs.upstream_tag }}
       version: ${{ steps.prepare.outputs.version }}
       v8_version: ${{ steps.prepare.outputs.v8_version }}
-      termux_source_tag: ${{ steps.prepare.outputs.termux_source_tag }}
-      termux_base_tag: ${{ steps.prepare.outputs.termux_base_tag }}
     steps:
       - name: Checkout automation repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -250,8 +248,6 @@ jobs:
             patches/README.md \
             patches/termux-runtime-compat.patch \
             scripts/verify-termux-runtime.sh \
-            patches/termux-runtime-compat.patch \
-            scripts/verify-termux-runtime.sh \
             scripts/fetch_rusty_v8_android.py \
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
@@ -376,7 +372,7 @@ jobs:
             exit 1
           fi
 
-          git commit --allow-empty -m "chore(termux): port ${termux_source_tag} delta to ${upstream_tag}"
+          git commit --allow-empty -m "chore(termux): apply pinned Android patches to ${upstream_tag}"
 
           # Confirm the committed candidate still contains both compatibility shims.
           git show HEAD:codex-rs/cli/src/remote_control_cmd.rs | grep -q 'tempdir_in(std::env::temp_dir())'
