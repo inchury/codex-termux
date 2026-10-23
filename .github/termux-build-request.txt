@@ -1,2 +1,2 @@
-Request: validate automated missing-V8 build and Codex Termux release pipeline.
-Coordinator now dispatches missing rusty_v8 builds and verifies published checksums.
+Request: verify explicit V8 needs dependency before Codex preparation.
+Expected: V8 152.2.0 build completes before Codex candidate preparation.
