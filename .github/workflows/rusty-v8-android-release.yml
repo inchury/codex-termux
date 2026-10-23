@@ -16,6 +16,20 @@ name: rusty-v8-android-release
 # for an upstream android prebuild.
 
 "on":
+  workflow_call:
+    inputs:
+      v8_version:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+      sandbox:
+        type: boolean
+        required: true
+      publish_release:
+        type: boolean
+        required: true
   workflow_dispatch:
     inputs:
       v8_version:
