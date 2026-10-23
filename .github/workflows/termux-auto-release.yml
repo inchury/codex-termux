@@ -21,6 +21,7 @@ jobs:
   prepare:
     name: Prepare upstream Termux candidate
     runs-on: ubuntu-24.04
+    timeout-minutes: 300
     outputs:
       should_build: ${{ steps.prepare.outputs.should_build }}
       candidate_branch: ${{ steps.prepare.outputs.candidate_branch }}
@@ -249,6 +250,7 @@ jobs:
             patches/termux-runtime-compat.patch \
             scripts/verify-termux-runtime.sh \
             scripts/fetch_rusty_v8_android.py \
+            scripts/ensure_rusty_v8_android.py \
             scripts/prepare_rusty_v8_android_source.py \
             scripts/patch_rusty_v8_android_bindgen.py \
             scripts/build_rusty_v8_android.sh \
@@ -334,29 +336,11 @@ jobs:
           )"
           echo "v8_version=${v8_version}" >> "${GITHUB_OUTPUT}"
 
-          V8_VERSION="${v8_version}" python3 - <<'PY'
-          import os
-          import tomllib
-          from pathlib import Path
-
-          version = os.environ["V8_VERSION"]
-          manifest = tomllib.loads(Path("third_party/v8/android-artifacts.toml").read_text())
-          try:
-              target = manifest["versions"][version]["targets"]["aarch64-linux-android"]
-              if target.get("repository") != os.environ["GITHUB_REPOSITORY"]:
-                  raise SystemExit(f"Android rusty_v8 {version} is not hosted by this repository; build and publish it with rusty-v8-android-release, then pin its verified checksums")
-              profile = target["profiles"]["ptrcomp_sandbox_release"]
-              for key in ("archive_sha256", "binding_sha256"):
-                  digest = profile[key]
-                  if len(digest) != 64:
-                      raise KeyError(key)
-          except KeyError as exc:
-              raise SystemExit(
-                  f"Android rusty_v8 {version} ptrcomp_sandbox_release is not pinned; "
-                  "run rusty-v8-android-release first and add its checksums to "
-                  "third_party/v8/android-artifacts.toml"
-              ) from exc
-          PY
+          # Missing versions are built once and published by our own V8 workflow.
+          # The coordinator verifies both downloaded asset checksums before
+          # pinning the version-specific manifest entry in this candidate.
+          V8_VERSION="${v8_version}" python3 scripts/ensure_rusty_v8_android.py
+          git add third_party/v8/android-artifacts.toml
 
           # Validate the compatibility contract before spending runner time on
           # the Android build. Cargo-backed checks remain enabled here.
