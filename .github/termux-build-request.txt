@@ -1,2 +1,2 @@
-Request: verify explicit V8 needs dependency before Codex preparation.
-Expected: V8 152.2.0 build completes before Codex candidate preparation.
+Request: retry Codex 0.164.0 Android build after pinned mxc-sdk dispatch cfg compatibility shim.
+V8 152.2.0 previously built and verified; should be reused.
