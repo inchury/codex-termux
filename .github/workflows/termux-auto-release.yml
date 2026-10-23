@@ -428,7 +428,9 @@ jobs:
   build-release:
     name: Build and publish Termux release
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_build == 'true' }}
+    # The optional build-v8 job may be skipped. Override GitHub's implicit
+    # skipped-dependency propagation while still requiring prepare success.
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.should_build == 'true' }}
     permissions:
       contents: write
     uses: ./.github/workflows/termux-auto-build.yml
