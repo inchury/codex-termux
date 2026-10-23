@@ -1,2 +1,2 @@
-Request: run Codex 0.164.0 build after fixing GitHub skipped optional V8 job propagation.
-Existing V8 152.2.0 release should be reused; mxc-sdk compatibility shim applied.
+Request: retry Android CLI build with unlocked Cargo fetch and corrected mxc-sdk shim path.
+V8 152.2.0 prebuilt should be reused.
