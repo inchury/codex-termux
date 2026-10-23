@@ -177,8 +177,8 @@ jobs:
           # but dispatch.rs calls run::log_policy_hash unconditionally.
           # Android is already rejected by ensure_host_supported(); guard only
           # the unreachable desktop-only logging calls, not the sandbox policy.
-          rustup run 1.95.0 cargo fetch --locked --target aarch64-linux-android
-          python3 scripts/patch_mxc_sdk_android.py
+          rustup run 1.95.0 cargo fetch --target aarch64-linux-android
+          python3 ../scripts/patch_mxc_sdk_android.py
           rustup run 1.95.0 cargo build --target aarch64-linux-android --release -p codex-cli -p codex-code-mode-host
           host_path="target/aarch64-linux-android/release/codex-code-mode-host"
           if [ ! -f "${host_path}" ]; then echo "code-mode host ${host_path} not found" >&2; exit 1; fi
