@@ -1,2 +1,2 @@
-Request: build upstream rust-v0.163.0 for Android ARM64 using self-hosted, SHA256-pinned rusty_v8 150.4.0.
-Source V8 verification: Actions run 39036043385; release rusty-v8-v150.4.0.
+Request: validate automated missing-V8 build and Codex Termux release pipeline.
+Coordinator now dispatches missing rusty_v8 builds and verifies published checksums.
