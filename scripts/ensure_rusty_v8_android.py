@@ -4,7 +4,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 REPO = os.environ["GITHUB_REPOSITORY"]
@@ -32,17 +31,7 @@ if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", VERSION):
     sys.exit(f"Invalid V8 version: {VERSION}")
 
 if not release_exists():
-    print(f"Missing {TAG}: dispatching the dedicated Android V8 build", flush=True)
-    gh("workflow", "run", "rusty-v8-android-release.yml", "--repo", REPO,
-       "--ref", "main", "-f", f"v8_version={VERSION}",
-       "-f", f"target={TARGET}", "-f", "sandbox=true",
-       "-f", "publish_release=true")
-    # V8 builds can take hours. Do not silently proceed without a published release.
-    deadline = time.monotonic() + 4 * 60 * 60
-    while not release_exists():
-        if time.monotonic() >= deadline:
-            sys.exit(f"Timed out waiting for {TAG}; inspect rusty-v8-android-release Actions")
-        time.sleep(45)
+    sys.exit(f"Missing {TAG}: V8 prerequisite workflow must succeed before preparing Codex")
 
 from tempfile import TemporaryDirectory
 with TemporaryDirectory() as tmp:
