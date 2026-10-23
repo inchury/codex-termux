@@ -173,6 +173,12 @@ jobs:
           echo "linking compiler-rt builtins: ${builtins}"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg=${builtins}"
           cd codex-rs
+          # mxc-sdk upstream b211201 gates its run module to desktop OSes,
+          # but dispatch.rs calls run::log_policy_hash unconditionally.
+          # Android is already rejected by ensure_host_supported(); guard only
+          # the unreachable desktop-only logging calls, not the sandbox policy.
+          rustup run 1.95.0 cargo fetch --locked --target aarch64-linux-android
+          python3 scripts/patch_mxc_sdk_android.py
           rustup run 1.95.0 cargo build --target aarch64-linux-android --release -p codex-cli -p codex-code-mode-host
           host_path="target/aarch64-linux-android/release/codex-code-mode-host"
           if [ ! -f "${host_path}" ]; then echo "code-mode host ${host_path} not found" >&2; exit 1; fi
