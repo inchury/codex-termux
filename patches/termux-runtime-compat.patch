@@ -561,24 +561,20 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
                  Err(std::fs::TryLockError::Error(err)) => Err(err),
              },
              Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(coordination_lock)),
-@@ -113,11 +142,13 @@ impl WriterLockCoordinator {
-             .create(true)
-             .truncate(false)
-             .open(self.directory.join(COORDINATION_LOCK_FILE))?;
--        file.lock().map_err(|err| {
--            io::Error::other(format!(
-+        if let Err(err) = file.lock()
-+            && !is_unsupported_file_lock_error(&err)
-+        {
-+            return Err(io::Error::other(format!(
-                 "failed to acquire thread writer coordination lock: {err}"
--            ))
--        })?;
-+            )));
-+        }
+@@ -128,7 +157,12 @@
+                         "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
+                     ));
+                 }
+-                Err(fs::TryLockError::Error(err)) => return Err(err),
++                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                    // Android's Rust stdlib can report unsupported advisory locking.
++                    // Preserve the existing bounded wait on supported hosts.
++                    break;
++                }
++                Err(fs::TryLockError::Error(err)) => return Err(err),
+             }
+         }
          Ok(file)
-     }
- 
 @@ -159,6 +190,10 @@ impl WriterLockCoordinator {
                      }
                  }
