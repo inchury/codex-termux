@@ -16,11 +16,11 @@ on:
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
+  CODEX_ZSH_RELEASE_TAG: codex-zsh-v0.1.0
+  CODEX_ZSH_MANIFEST_SHA256: c534eab89dcea7e3d8a5e5b3f49c025c7c64cd4e4d9814ee24871de58a9359a1
 
-# The launcher uses this per-tag group as the migration boundary. Keep shared
-# publication jobs on the original queued group below when changing this.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -41,12 +41,13 @@ jobs:
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
             || { echo "❌  Not a tag ref"; exit 1; }
 
-          tag_ver="${GITHUB_REF_NAME#rust-v}"
-          [[ "${GITHUB_REF_NAME}" == rust-v* ]] \
-            && python3 .github/scripts/releases.py "${tag_ver}" \
+          # Release tags must match the version in Cargo.toml.
+          # Keep this pattern in sync with VERSION_RE in
+          # .github/scripts/publish_r2_release.py.
+          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha(\.[0-9]+){0,2}|beta(\.[0-9]+)?))?$ ]] \
             || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
 
-          # Release tags must match the version in Cargo.toml.
+          tag_ver="${GITHUB_REF_NAME#rust-v}"
           cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
                         | sed -E 's/version *= *"([^"]+)".*/\1/')"
 
@@ -58,13 +59,8 @@ jobs:
 
   build:
     needs: tag-check
-    name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    # Parallel Bazel artifacts are advisory while Cargo remains the release path.
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
-    runs-on: ${{ matrix.runner }}
-    environment:
-      name: bazel
-      deployment: false
+    name: Build - ${{ matrix.runner }} - ${{ matrix.target }} - ${{ matrix.bundle }}
+    runs-on: ${{ matrix.runs_on || matrix.runner }}
     # Linux releases also build the native voice runtime in this job.
     timeout-minutes: 120
     permissions:
@@ -74,72 +70,66 @@ jobs:
       run:
         working-directory: codex-rs
     env:
-      # Preserve Cargo names while teams opt into the additional Bazel artifacts.
-      ARTIFACT_SUFFIX: ${{ matrix.build-system == 'bazel' && '-bazel' || '' }}
-      # Archive packed macOS dSYMs before stripping the Cargo binaries.
+      # macOS release packages archive packed dSYM bundles before stripping.
       CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: ${{ contains(matrix.target, 'apple-darwin') && 'packed' || 'off' }}
-      # The git CLI reliably fetches nested native-library submodules on macOS.
+      # Use the git CLI instead of Cargo's libgit2 path for git dependencies.
+      # macOS release runners have intermittently failed to fetch nested
+      # submodules through SecureTransport/libgit2, especially libwebrtc's
+      # libyuv submodule from chromium.googlesource.com.
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-        bundle: [primary, app-server]
         include:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             bundle: app-server
             artifact_name: aarch64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
           - runner: macos-15-xlarge
             target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             build_dmg: "true"
           - runner: macos-15-xlarge
             target: x86_64-apple-darwin
             bundle: app-server
             artifact_name: x86_64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
           # Release artifacts intentionally ship MUSL-linked Linux binaries.
           - runner: ${{ github.event.repository.name }}-linux-x64-xl
             target: x86_64-unknown-linux-musl
             bundle: primary
             artifact_name: x86_64-unknown-linux-musl
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy bwrap"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy bwrap"
             build_dmg: "false"
           - runner: ${{ github.event.repository.name }}-linux-x64-xl
             target: x86_64-unknown-linux-musl
             bundle: app-server
             artifact_name: x86_64-unknown-linux-musl-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
           - runner: ${{ github.event.repository.name }}-linux-arm64
             target: aarch64-unknown-linux-musl
             bundle: primary
             artifact_name: aarch64-unknown-linux-musl
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy bwrap"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy bwrap"
             build_dmg: "false"
           - runner: ${{ github.event.repository.name }}-linux-arm64
             target: aarch64-unknown-linux-musl
             bundle: app-server
             artifact_name: aarch64-unknown-linux-musl-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
 
     steps:
@@ -182,12 +172,11 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils pkg-config libcap-dev
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          targets: ${{ matrix.build-system == 'cargo' && matrix.target || '' }}
+          targets: ${{ matrix.target }}
 
-      - if: ${{ matrix.build-system == 'cargo' && contains(matrix.target, 'linux') }}
+      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Use hermetic Cargo home (musl)
         shell: bash
         run: |
@@ -198,20 +187,20 @@ jobs:
           echo "${cargo_home}/bin" >> "$GITHUB_PATH"
           : > "${cargo_home}/config.toml"
 
-      - if: ${{ matrix.build-system == 'cargo' && contains(matrix.target, 'linux') }}
+      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.14.0
           use-cache: false
 
-      - if: ${{ matrix.build-system == 'cargo' && contains(matrix.target, 'linux') }}
+      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Install musl build tools
         env:
           TARGET: ${{ matrix.target }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
-      - if: ${{ matrix.build-system == 'cargo' && contains(matrix.target, 'linux') }}
+      - if: ${{ matrix.target == 'x86_64-unknown-linux-musl' || matrix.target == 'aarch64-unknown-linux-musl'}}
         name: Disable aws-lc jitter entropy (musl)
         shell: bash
         run: |
@@ -223,12 +212,11 @@ jobs:
           echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
 
       - name: Configure rusty_v8 artifact overrides and verify checksums
-        if: ${{ matrix.build-system == 'cargo' }}
         uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
 
-      - if: ${{ matrix.build-system == 'cargo' && contains(matrix.target, 'linux') }}
+      - if: ${{ contains(matrix.target, 'linux') }}
         name: Build bwrap and export digest
         shell: bash
         run: |
@@ -251,10 +239,12 @@ jobs:
           echo "Built bwrap ${bwrap_path} with sha256:${digest}"
 
       - name: Cargo build
-        if: ${{ matrix.build-system == 'cargo' }}
         shell: bash
         run: |
           target="${{ matrix.target }}"
+          if [[ "$target" == "x86_64-pc-windows-msvc" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             # bwrap was built, finalized, and hashed before this build so
@@ -268,22 +258,12 @@ jobs:
           export STABLE_GIT_COMMIT
           cargo build --target "$target" --release --timings "${build_args[@]}"
 
-      - name: Prepare Bazel for release binaries or Linux voice
-        if: matrix.build-system == 'bazel' || (matrix.bundle == 'primary' && contains(matrix.target, 'linux'))
-        uses: ./.github/actions/prepare-bazel-ci
+      - name: Upload Cargo timings
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          target: ${{ matrix.target }}
-          cache-scope: bazel-release-${{ matrix.bundle }}
-
-      - name: Build Bazel release binaries and symbols
-        if: ${{ matrix.build-system == 'bazel' }}
-        uses: ./.github/actions/build-bazel-release
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        with:
-          target: ${{ matrix.target }}
-          bundle: ${{ matrix.bundle }}
-          release-dir: ${{ github.workspace }}/codex-rs/target/${{ matrix.target }}/release
+          name: cargo-timings-rust-release-${{ matrix.target }}-${{ matrix.bundle }}
+          path: codex-rs/target/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
 
       - name: Build symbols archive and strip binaries
         shell: bash
@@ -304,30 +284,24 @@ jobs:
             --archive-dir "symbols-dist/${{ matrix.artifact_name }}" \
             --binaries "${binaries[*]}"
 
-      - name: Suffix Bazel artifact filenames
-        if: ${{ matrix.build-system == 'bazel' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for artifact in "symbols-dist/${{ matrix.artifact_name }}"/*; do
-            name="${artifact##*/}"
-            stem="${name%%.*}"
-            mv "$artifact" "${artifact%/*}/${stem}-bazel${name#"$stem"}"
-          done
-
       - name: Upload symbols archive
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-symbols${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-symbols
           path: codex-rs/symbols-dist/${{ matrix.artifact_name }}/*
           if-no-files-found: error
+
+      - name: Set up Bazel for Linux voice
+        if: ${{ matrix.bundle == 'primary' && contains(matrix.target, 'linux') }}
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.28.1
 
       - name: Build Linux voice runtime
         if: ${{ matrix.bundle == 'primary' && contains(matrix.target, 'linux') }}
         shell: bash
         env:
           APP_TARGET: ${{ matrix.target }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
@@ -337,8 +311,7 @@ jobs:
             x86_64-unknown-linux-gnu) prefix=linux_x86_64 ;;
             *) exit 1 ;;
           esac
-          python3 .github/scripts/run_bazel_with_buildbuddy.py build --config=release \
-            //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
+          bazel build -c opt //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
           source="bazel-bin/third_party/voice/native_runtime_${prefix}"
           output="${RUNNER_TEMP}/signed-voice/${APP_TARGET}"
           mkdir -p "$output"
@@ -378,7 +351,7 @@ jobs:
         name: Upload unsigned macOS artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-unsigned${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-unsigned
           path: codex-rs/unsigned-dist/${{ matrix.target }}/*
           if-no-files-found: error
 
@@ -398,9 +371,9 @@ jobs:
           mkdir -p "$dest"
 
           for binary in ${{ matrix.binaries }}; do
-            # Both variants package the host and executor; only the primary publishes
+            # Both variants package the host, but only the primary bundle publishes
             # standalone binary archives to avoid duplicate release asset names.
-            if [[ "${{ matrix.bundle }}" == "app-server" && ( "$binary" == "codex-code-mode-host" || "$binary" == "codex-exec-server" ) ]]; then
+            if [[ "${{ matrix.bundle }}" == "app-server" && "$binary" == "codex-code-mode-host" ]]; then
               continue
             fi
             cp "target/${{ matrix.target }}/release/${binary}" "$dest/${binary}-${{ matrix.target }}"
@@ -413,6 +386,17 @@ jobs:
           if [[ "${{ matrix.build_dmg }}" == "true" ]]; then
             cp target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg "$dest/codex-${{ matrix.target }}.dmg"
           fi
+
+      - name: Download packaged zsh manifest
+        if: ${{ runner.os != 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "${RUNNER_TEMP}/codex-zsh"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "${RUNNER_TEMP}/codex-zsh" "$CODEX_ZSH_MANIFEST_SHA256"
 
       - name: Build Codex package archive
         if: ${{ runner.os != 'macOS' }}
@@ -432,6 +416,7 @@ jobs:
             --bundle "$BUNDLE" \
             --entrypoint-dir "target/${TARGET}/release" \
             --archive-dir "dist/${TARGET}" \
+            --zsh-manifest "${RUNNER_TEMP}/codex-zsh" \
             "${voice_args[@]}"
 
       - name: Cosign Linux voice package archives
@@ -442,14 +427,8 @@ jobs:
           artifacts-dir: ${{ github.workspace }}/codex-rs/dist/${{ matrix.target }}
           binaries: codex-package-${{ matrix.target }}.tar.gz codex-package-${{ matrix.target }}.tar.zst
 
-      - name: Set up Python release tools
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' && runner.os != 'macOS' }}
-        uses: ./.github/actions/setup-python-release-tools
-        with:
-          group: runtime
-
       - name: Build Python runtime wheel
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' && runner.os != 'macOS' }}
+        if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -473,6 +452,11 @@ jobs:
               ;;
           esac
 
+          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
+          # Do not install into the runner's system Python; macOS runners mark
+          # the Homebrew Python as externally managed under PEP 668.
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
+
           # Keep the existing manylinux_2_17 wheel compatible with older glibc.
           # GNU voice libraries belong in the signed release package archives,
           # but their minimum glibc version is not covered by this wheel tag.
@@ -481,7 +465,8 @@ jobs:
             --target "${{ matrix.target }}" \
             --bundle primary \
             --entrypoint-dir "target/${{ matrix.target }}/release" \
-            --archive-dir "$wheel_archives"
+            --archive-dir "$wheel_archives" \
+            --zsh-manifest "${RUNNER_TEMP}/codex-zsh"
           wheel_archive="${wheel_archives}/codex-package-${{ matrix.target }}.tar.gz"
           python3 - "$wheel_archive" <<'PY'
           import sys
@@ -501,11 +486,10 @@ jobs:
             --platform-tag "$platform_tag"
           )
           python3 "${stage_runtime_args[@]}"
-          uv build --offline --no-build-isolation --no-create-gitignore \
-            --python "${RUNNER_TEMP}/python-runtime-build-venv" --wheel --out-dir "$wheel_dir" "$stage_dir"
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
 
       - name: Upload Python runtime wheel
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' && runner.os != 'macOS' }}
+        if: ${{ matrix.bundle == 'primary' && runner.os != 'macOS' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: python-runtime-wheel-${{ matrix.target }}
@@ -549,21 +533,10 @@ jobs:
             zstd -T0 -19 --rm "$dest/$base"
           done
 
-      - name: Suffix Bazel artifact filenames
-        if: ${{ matrix.build-system == 'bazel' && runner.os != 'macOS' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for artifact in "dist/${{ matrix.target }}"/*; do
-            name="${artifact##*/}"
-            stem="${name%%.*}"
-            mv "$artifact" "${artifact%/*}/${stem}-bazel${name#"$stem"}"
-          done
-
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         if: ${{ runner.os != 'macOS' }}
         with:
-          name: ${{ matrix.artifact_name }}${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}
           # Upload the per-binary .zst files, .tar.gz equivalents, and any
           # prebuilt archives staged above.
           path: |
@@ -573,9 +546,6 @@ jobs:
     needs: tag-check
     name: Build voice runtime - ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
-    environment:
-      name: bazel
-      deployment: false
     timeout-minutes: 120
     permissions:
       contents: read
@@ -596,24 +566,20 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
-      - name: Prepare Bazel CI
-        uses: ./.github/actions/prepare-bazel-ci
+      - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          target: ${{ matrix.target }}
-          cache-scope: bazel-release-primary
+          bazelisk-version: 1.28.1
       - name: Build matching helper and native runtime
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
           PREFIX: ${{ matrix.prefix }}
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
           set -euo pipefail
           # Release tags bump Cargo.toml without rewriting the workspace lockfile.
           # Refresh workspace versions before Bazel reads the Cargo dependency graph.
           (cd codex-rs && cargo update --workspace)
-          python3 .github/scripts/run_bazel_with_buildbuddy.py build --config=release \
-            --macos_minimum_os=14.0 //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
+          bazel build -c opt //codex-rs/voice-host:codex-voice-host //third_party/voice:native_runtime
           runtime="bazel-bin/third_party/voice/native_runtime_${PREFIX}"
           PYTHONPATH=third_party/voice python3 - "$runtime" "$TARGET" <<'PY'
           from pathlib import Path
@@ -636,8 +602,7 @@ jobs:
   sign-macos-binaries:
     needs: [build, build-macos-voice]
     if: ${{ always() && needs.build.result == 'success' && needs.build-macos-voice.result == 'success' }}
-    name: Sign macOS binaries - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    name: Sign macOS binaries - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -647,34 +612,26 @@ jobs:
       contents: read
       id-token: write
 
-    env:
-      ARTIFACT_SUFFIX: ${{ matrix.build-system == 'bazel' && '-bazel' || '' }}
-
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
           - target: aarch64-apple-darwin
             bundle: app-server
             artifact_name: aarch64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
           - target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
           - target: x86_64-apple-darwin
             bundle: app-server
             artifact_name: x86_64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -684,7 +641,7 @@ jobs:
       - name: Download unsigned macOS binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-unsigned${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-unsigned
           path: ${{ runner.temp }}/unsigned-macos
 
       - name: Download unsigned voice runtime
@@ -770,22 +727,33 @@ jobs:
           set -euo pipefail
 
           signed_root="${GITHUB_WORKSPACE}/signed-resources/${TARGET}"
+          zsh_manifest="${RUNNER_TEMP}/codex-zsh-${TARGET}"
           mkdir -p "$signed_root"
+          curl -fsSL \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${CODEX_ZSH_RELEASE_TAG}/codex-zsh" \
+            -o "$zsh_manifest"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/verify-zsh-manifest.sh" \
+            "$zsh_manifest" "$CODEX_ZSH_MANIFEST_SHA256"
 
-          PYTHONPATH="${GITHUB_WORKSPACE}/scripts" python3 - "$TARGET" "$signed_root" <<'PY'
+          PYTHONPATH="${GITHUB_WORKSPACE}/scripts" python3 - "$TARGET" "$signed_root" "$zsh_manifest" <<'PY'
           import shutil
           import sys
           from pathlib import Path
 
           from codex_package.ripgrep import fetch_rg
           from codex_package.targets import TARGET_SPECS
+          from codex_package.zsh import resolve_zsh_bin
 
           spec = TARGET_SPECS[sys.argv[1]]
           signed_root = Path(sys.argv[2])
+          zsh_bin = resolve_zsh_bin(spec, Path(sys.argv[3]))
+          if zsh_bin is None:
+              raise RuntimeError(f"Pinned zsh release is missing {spec.target}")
           shutil.copy2(fetch_rg(spec), signed_root / "rg")
+          shutil.copy2(zsh_bin, signed_root / "zsh")
           PY
 
-          for resource in rg; do
+          for resource in rg zsh; do
             binary="${signed_root}/${resource}"
             report_dir="${GITHUB_WORKSPACE}/macos-binary-signing-verification/${TARGET}/${resource}"
             mkdir -p "$report_dir"
@@ -853,14 +821,14 @@ jobs:
         if: ${{ matrix.bundle == 'primary' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: voice-${{ matrix.target }}-signed${{ env.ARTIFACT_SUFFIX }}
+          name: voice-${{ matrix.target }}-signed
           path: signed-voice-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
       - name: Upload signed macOS binaries
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-signed-binaries${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-signed-binaries
           path: signed-macos/${{ matrix.target }}/*
           if-no-files-found: error
 
@@ -868,7 +836,7 @@ jobs:
         if: ${{ matrix.bundle == 'primary' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.target }}-signed-resources${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.target }}-signed-resources
           path: signed-resources/${{ matrix.target }}/*
           if-no-files-found: error
 
@@ -876,14 +844,13 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-binary-signing-verification${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-binary-signing-verification
           path: macos-binary-signing-verification/${{ matrix.target }}/
           if-no-files-found: warn
 
   package-macos:
     needs: sign-macos-binaries
-    name: Package macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    name: Package macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: macos-15-xlarge
     timeout-minutes: 45
     permissions:
@@ -892,37 +859,29 @@ jobs:
       run:
         working-directory: codex-rs
 
-    env:
-      ARTIFACT_SUFFIX: ${{ matrix.build-system == 'bazel' && '-bazel' || '' }}
-
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             build_dmg: "true"
           - target: aarch64-apple-darwin
             bundle: app-server
             artifact_name: aarch64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
           - target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             build_dmg: "true"
           - target: x86_64-apple-darwin
             bundle: app-server
             artifact_name: x86_64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             build_dmg: "false"
 
     steps:
@@ -933,20 +892,20 @@ jobs:
       - name: Download signed macOS binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-signed-binaries${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-signed-binaries
           path: codex-rs/target/${{ matrix.target }}/release
 
       - name: Download signed macOS helpers
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.target }}-signed-resources${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.target }}-signed-resources
           path: codex-rs/signed-resources/${{ matrix.target }}
 
       - name: Download signed voice runtime
         if: ${{ matrix.bundle == 'primary' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: voice-${{ matrix.target }}-signed${{ env.ARTIFACT_SUFFIX }}
+          name: voice-${{ matrix.target }}-signed
           path: ${{ runner.temp }}/signed-voice
 
       - name: Verify signed voice runtime
@@ -987,7 +946,7 @@ jobs:
             codesign --verify --strict --verbose=2 "$binary_path"
           done
 
-          for resource in rg; do
+          for resource in rg zsh; do
             resource_path="signed-resources/${{ matrix.target }}/${resource}"
             chmod 0755 "$resource_path"
             codesign --verify --strict --verbose=2 "$resource_path"
@@ -1001,9 +960,9 @@ jobs:
           mkdir -p "$dest"
 
           for binary in ${{ matrix.binaries }}; do
-            # Both variants package the host and executor; only the primary publishes
+            # Both variants package the host, but only the primary bundle publishes
             # standalone binary archives to avoid duplicate release asset names.
-            if [[ "${{ matrix.bundle }}" == "app-server" && ( "$binary" == "codex-code-mode-host" || "$binary" == "codex-exec-server" ) ]]; then
+            if [[ "${{ matrix.bundle }}" == "app-server" && "$binary" == "codex-code-mode-host" ]]; then
               continue
             fi
             cp "target/${{ matrix.target }}/release/${binary}" "$dest/${binary}-${{ matrix.target }}"
@@ -1027,6 +986,7 @@ jobs:
             --entrypoint-dir "target/${TARGET}/release" \
             --archive-dir "dist/${TARGET}" \
             --rg-bin "signed-resources/${TARGET}/rg" \
+            --zsh-bin "signed-resources/${TARGET}/zsh" \
             ${voice_args[@]+"${voice_args[@]}"}
 
       - name: Build unsigned macOS DMG
@@ -1079,18 +1039,12 @@ jobs:
         if: ${{ matrix.build_dmg == 'true' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-unsigned-dmg${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-unsigned-dmg
           path: codex-rs/target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg
           if-no-files-found: error
 
-      - name: Set up Python release tools
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' }}
-        uses: ./.github/actions/setup-python-release-tools
-        with:
-          group: runtime
-
       - name: Build Python runtime wheel
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' }}
+        if: ${{ matrix.bundle == 'primary' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1108,6 +1062,9 @@ jobs:
               ;;
           esac
 
+          python3 -m venv "${RUNNER_TEMP}/python-runtime-build-venv"
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m pip install build
+
           # The wheel keeps its macOS 10.9/11 tags. The native voice build
           # currently targets macOS 14, so keep it in the release archives and
           # DMG but leave this older-OS-compatible wheel unchanged.
@@ -1117,7 +1074,8 @@ jobs:
             --bundle primary \
             --entrypoint-dir "target/${{ matrix.target }}/release" \
             --archive-dir "$wheel_archives" \
-            --rg-bin "signed-resources/${{ matrix.target }}/rg"
+            --rg-bin "signed-resources/${{ matrix.target }}/rg" \
+            --zsh-bin "signed-resources/${{ matrix.target }}/zsh"
           wheel_archive="${wheel_archives}/codex-package-${{ matrix.target }}.tar.gz"
           python3 - "$wheel_archive" <<'PY'
           import sys
@@ -1135,11 +1093,10 @@ jobs:
             "$wheel_archive" \
             --codex-version "${GITHUB_REF_NAME}" \
             --platform-tag "$platform_tag"
-          uv build --offline --no-build-isolation --no-create-gitignore \
-            --python "${RUNNER_TEMP}/python-runtime-build-venv" --wheel --out-dir "$wheel_dir" "$stage_dir"
+          "${RUNNER_TEMP}/python-runtime-build-venv/bin/python" -m build --wheel --outdir "$wheel_dir" "$stage_dir"
 
       - name: Upload Python runtime wheel
-        if: ${{ matrix.build-system == 'cargo' && matrix.bundle == 'primary' }}
+        if: ${{ matrix.bundle == 'primary' }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: python-runtime-wheel-${{ matrix.target }}
@@ -1164,14 +1121,13 @@ jobs:
       - name: Upload packaged macOS artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-packaged${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-packaged
           path: codex-rs/dist/${{ matrix.target }}/*
           if-no-files-found: error
 
   sign-macos-dmg:
     needs: package-macos
-    name: Sign macOS DMG - ${{ matrix.target }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    name: Sign macOS DMG - ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -1181,16 +1137,9 @@ jobs:
       contents: read
       id-token: write
 
-    env:
-      ARTIFACT_SUFFIX: ${{ matrix.build-system == 'bazel' && '-bazel' || '' }}
-
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
         include:
           - target: aarch64-apple-darwin
             artifact_name: aarch64-apple-darwin
@@ -1205,7 +1154,7 @@ jobs:
       - name: Download unsigned macOS DMG
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-unsigned-dmg${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-unsigned-dmg
           path: ${{ runner.temp }}/unsigned-dmg
 
       - name: Set up AKV PKCS11 macOS signing
@@ -1259,7 +1208,7 @@ jobs:
       - name: Upload signed macOS DMG
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-signed-dmg${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-signed-dmg
           path: ${{ runner.temp }}/unsigned-dmg/codex-${{ matrix.target }}.dmg
           if-no-files-found: error
 
@@ -1267,7 +1216,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}-dmg-signing-verification${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-dmg-signing-verification
           path: macos-dmg-signing-verification/${{ matrix.target }}/
           if-no-files-found: warn
 
@@ -1275,8 +1224,7 @@ jobs:
     needs:
       - package-macos
       - sign-macos-dmg
-    name: Verify macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }} - ${{ matrix.build-system }}
-    continue-on-error: ${{ matrix.build-system == 'bazel' }}
+    name: Verify macOS artifacts - ${{ matrix.target }} - ${{ matrix.bundle }}
     runs-on: macos-15-xlarge
     timeout-minutes: 30
     permissions:
@@ -1285,37 +1233,29 @@ jobs:
       run:
         working-directory: codex-rs
 
-    env:
-      ARTIFACT_SUFFIX: ${{ matrix.build-system == 'bazel' && '-bazel' || '' }}
-
     strategy:
       fail-fast: false
       matrix:
-        build-system: [cargo, bazel]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-        bundle: [primary, app-server]
         include:
           - target: aarch64-apple-darwin
             bundle: primary
             artifact_name: aarch64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             verify_dmg: "true"
           - target: aarch64-apple-darwin
             bundle: app-server
             artifact_name: aarch64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             verify_dmg: "false"
           - target: x86_64-apple-darwin
             bundle: primary
             artifact_name: x86_64-apple-darwin
-            binaries: "codex codex-code-mode-host codex-exec-server codex-responses-api-proxy"
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy"
             verify_dmg: "true"
           - target: x86_64-apple-darwin
             bundle: app-server
             artifact_name: x86_64-apple-darwin-app-server
-            binaries: "codex-app-server codex-code-mode-host codex-exec-server"
+            binaries: "codex-app-server codex-code-mode-host"
             verify_dmg: "false"
 
     steps:
@@ -1326,20 +1266,20 @@ jobs:
       - name: Download packaged macOS artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-packaged${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-packaged
           path: codex-rs/dist/${{ matrix.target }}
 
       - name: Download signed macOS binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-signed-binaries${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-signed-binaries
           path: ${{ runner.temp }}/signed-binaries
 
       - name: Download signed macOS DMG
         if: ${{ matrix.verify_dmg == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.artifact_name }}-signed-dmg${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}-signed-dmg
           path: ${{ runner.temp }}/signed-dmg
 
       - name: Verify signed macOS artifacts
@@ -1376,15 +1316,6 @@ jobs:
             normalized_actual="$(mktemp)"
             normalized_expected="$(mktemp)"
             codesign -d --entitlements :- "$path" >"$actual_entitlements"
-            # An omitted entitlement blob is valid only when the expected plist is empty.
-            python3 - "$expected_entitlements" "$actual_entitlements" <<'PY'
-          import plistlib
-          import sys
-          from pathlib import Path
-          expected, actual = map(Path, sys.argv[1:])
-          if not actual.stat().st_size and plistlib.loads(expected.read_bytes()) == {}:
-              actual.write_bytes(expected.read_bytes())
-          PY
             plutil -convert xml1 -o "$normalized_actual" "$actual_entitlements"
             plutil -convert xml1 -o "$normalized_expected" "$expected_entitlements"
             diff -u "$normalized_expected" "$normalized_actual"
@@ -1395,9 +1326,9 @@ jobs:
             binary_path="${RUNNER_TEMP}/signed-binaries/${binary}"
             verify_signed_binary "$binary_path" "$binary"
 
-            # The app-server package contains both helpers, but their standalone archives
+            # The app-server package contains the host, but its standalone archives
             # are omitted above to avoid duplicate release asset names.
-            if [[ "${{ matrix.bundle }}" == "app-server" && ( "$binary" == "codex-code-mode-host" || "$binary" == "codex-exec-server" ) ]]; then
+            if [[ "${{ matrix.bundle }}" == "app-server" && "$binary" == "codex-code-mode-host" ]]; then
               continue
             fi
 
@@ -1433,10 +1364,10 @@ jobs:
           tar -xzf "${packaged_dir}/${package_stem}-${target}.tar.gz" -C "$package_dir"
           verify_signed_binary "${package_dir}/bin/${package_entrypoint}" "$package_entrypoint"
           verify_signed_binary "${package_dir}/bin/codex-code-mode-host" "codex-code-mode-host"
-          verify_signed_binary "${package_dir}/bin/codex-exec-server" "codex-exec-server"
 
           for resource in \
-            "${package_dir}/codex-path/rg"
+            "${package_dir}/codex-path/rg" \
+            "${package_dir}/codex-resources/zsh/bin/zsh"
           do
             chmod 0755 "$resource"
             lipo "$resource" -verify_arch "$expected_arch"
@@ -1518,21 +1449,10 @@ jobs:
           trap - EXIT
           cp "$dmg_path" "dist/${target}/codex-${target}.dmg"
 
-      - name: Suffix Bazel artifact filenames
-        if: ${{ matrix.build-system == 'bazel' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for artifact in "dist/${{ matrix.target }}"/*; do
-            name="${artifact##*/}"
-            stem="${name%%.*}"
-            mv "$artifact" "${artifact%/*}/${stem}-bazel${name#"$stem"}"
-          done
-
       - name: Upload verified macOS artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: ${{ matrix.artifact_name }}${{ env.ARTIFACT_SUFFIX }}
+          name: ${{ matrix.artifact_name }}
           path: codex-rs/dist/${{ matrix.target }}/*
           if-no-files-found: error
 
@@ -1589,7 +1509,7 @@ jobs:
       - name: Setup Node.js for npm packaging
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version-file: .nvmrc
+          node-version: 22
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -1612,12 +1532,6 @@ jobs:
           if-no-files-found: error
 
   release:
-    # Each job checks its channel under this lock; out-of-order builds cannot
-    # roll back GitHub, npm, R2, or the canary branch.
-    concurrency: &release-publication
-      group: rust-release
-      queue: max
-      cancel-in-progress: false
     needs:
       - tag-check
       - build
@@ -1670,10 +1584,10 @@ jobs:
 
           # Use the commit message for the commit the tag points at (not the
           # annotated tag message).
-          # Preserve the previous publisher's 124,999-character cap, reserving
-          # the last character for a trailing newline for GitHub's renderer.
-          git log -1 --format=%B "${commit}" |
-            python3 -c 'import sys; print(sys.stdin.read()[:124998])' > "${notes_path}"
+          git log -1 --format=%B "${commit}" > "${notes_path}"
+          # Ensure trailing newline so GitHub's markdown renderer doesn't
+          # occasionally run the last line into subsequent content.
+          echo >> "${notes_path}"
 
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
 
@@ -1681,7 +1595,18 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
-          pattern: "{{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server},pc-windows-msvc}{,-bazel},*-symbols{,-bazel},argument-comment-lint-*,python-runtime-wheel-*,npm-packages}"
+          pattern: "{{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server},pc-windows-msvc},*-symbols,argument-comment-lint-*,python-runtime-wheel-*,npm-packages}"
+
+      - name: Download verified provisioned macOS packages
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: "provisioned-macos-verified-candidate-*"
+
+      - name: Remove per-architecture checksum filenames before release upload
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        run: rm dist/provisioned-macos-verified-candidate-*/SHA256SUMS
 
       - name: Download verified provisioned macOS packages
         if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
@@ -1726,10 +1651,7 @@ jobs:
 
       - name: Define release name
         id: release_name
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
           # Extract the version from the tag name, which is in the format
           # "rust-v0.1.0".
           version="${GITHUB_REF_NAME#rust-v}"
@@ -1738,9 +1660,7 @@ jobs:
             echo "make_latest=false" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
           else
-            make_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" \
-              | python3 .github/scripts/releases.py "$version" --check-github latest)"
-            echo "make_latest=${make_latest}" >> $GITHUB_OUTPUT
+            echo "make_latest=true" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
@@ -1766,48 +1686,25 @@ jobs:
       - name: Stage installer scripts
         run: |
           cp scripts/install/install.sh dist/install.sh
-          mv dist/x86_64-pc-windows-msvc/install.ps1 dist/install.ps1
+          cp scripts/install/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_NAME: ${{ steps.release_name.outputs.name }}
-          RELEASE_NOTES: ${{ steps.release_notes.outputs.path }}
-          MAKE_LATEST: ${{ steps.release_name.outputs.make_latest }}
-          PRERELEASE: ${{ steps.release_name.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-
-          # Look up this tag, including drafts, without listing release history.
-          # API errors must fail the step rather than look like an absent release.
-          # shellcheck disable=SC2016
-          exists="$(gh api graphql \
-            -f query='query($owner:String!,$repo:String!,$tag:String!){repository(owner:$owner,name:$repo){release(tagName:$tag){databaseId}}}' \
-            -f owner="$GITHUB_REPOSITORY_OWNER" \
-            -f repo="${GITHUB_REPOSITORY#*/}" \
-            -f tag="$GITHUB_REF_NAME" \
-            --jq '.data.repository.release != null')"
-          release_args=(
-            --repo "$GITHUB_REPOSITORY"
-            --title "$RELEASE_NAME"
-            --notes-file "$RELEASE_NOTES"
-            --prerelease="$PRERELEASE"
-          )
-          if [[ "$exists" == false ]]; then
-            # Prereleases must be created directly to keep prereleased events.
-            draft=true
-            if [[ "$PRERELEASE" == true ]]; then
-              draft=false
-            fi
-            gh release create "$GITHUB_REF_NAME" "${release_args[@]}" \
-              --draft="$draft" --verify-tag --latest=false
-          fi
-
-          mapfile -d '' assets < <(find dist -type f -print0 | sort -z)
-          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
-            --repo "$GITHUB_REPOSITORY" --clobber
-          gh release edit "$GITHUB_REF_NAME" "${release_args[@]}" \
-            --draft=false --latest="$MAKE_LATEST"
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: ${{ steps.release_name.outputs.name }}
+          tag_name: ${{ github.ref_name }}
+          body_path: ${{ steps.release_notes.outputs.path }}
+          files: dist/**
+          overwrite_files: true
+          # Release asset uploads follow normal REST API behavior. GitHub recommends
+          # serial API requests to avoid secondary rate limits:
+          # https://docs.github.com/en/rest/releases/assets#upload-a-release-asset
+          # https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#avoid-concurrent-requests
+          preserve_order: true
+          make_latest: ${{ steps.release_name.outputs.make_latest }}
+          # Mark as prerelease only when the version has a suffix after x.y.z
+          # (e.g. -alpha, -beta). Otherwise publish a normal release.
+          prerelease: ${{ steps.release_name.outputs.prerelease }}
 
   publish-r2-assets:
     name: publish-r2-assets
@@ -1824,7 +1721,6 @@ jobs:
       stage: assets
 
   publish-r2:
-    concurrency: *release-publication
     name: publish-r2
     needs: [release, publish-dotslash, publish-r2-assets]
     if: >-
@@ -1875,11 +1771,19 @@ jobs:
           tag: ${{ github.ref_name }}
           config: .github/dotslash-provisioned-config.json
 
+      - name: Publish the provisioned macOS package manifest
+        if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
+        uses: facebook/dotslash-publish-release@9c9ec027515c34db9282a09a25a9cab5880b2c52 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ github.ref_name }}
+          config: .github/dotslash-provisioned-config.json
+
   # Publish to npm using OIDC authentication.
   # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
   # npm docs: https://docs.npmjs.com/trusted-publishers
   publish-npm:
-    concurrency: *release-publication
     # Publish to npm for stable releases, numbered alphas, and alpha hotfixes.
     if: >-
       ${{
@@ -1895,16 +1799,11 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          # Trusted publishing requires the selected Node.js release to include npm >= 11.5.1.
-          node-version-file: .nvmrc
+          # Node 24 bundles npm >= 11.5.1, which trusted publishing requires.
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
           scope: "@openai"
 
@@ -1938,9 +1837,6 @@ jobs:
         env:
           VERSION: ${{ needs.release.outputs.version }}
           NPM_TAG: ${{ needs.release.outputs.npm_tag }}
-          NPM_CONFIG_LOGLEVEL: verbose
-          NPM_CONFIG_LOGS_DIR: ${{ runner.temp }}/npm-publish-logs
-          NPM_CONFIG_LOGS_MAX: "100"
         run: |
           set -euo pipefail
           prefix=""
@@ -2023,50 +1919,29 @@ jobs:
                 ;;
             esac
 
-            # The publication workflow holds the lock from this lookup through
-            # publish, including concurrent releases from other version lines.
-            tag="$(python3 .github/scripts/npm_alpha_tag.py "${tarball}" "${VERSION}" "${tag:-latest}")"
-
             publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
             if [[ -n "${tag}" ]]; then
               publish_cmd+=(--tag "${tag}")
             fi
 
-            # A fresh npm process obtains new OIDC credentials on each attempt.
-            for attempt in 1 2 3; do
-              echo "+ ${publish_cmd[*]} (attempt ${attempt}/3)"
-              set +e
-              publish_output="$("${publish_cmd[@]}" 2>&1)"
-              publish_status=$?
-              set -e
+            echo "+ ${publish_cmd[*]}"
+            set +e
+            publish_output="$("${publish_cmd[@]}" 2>&1)"
+            publish_status=$?
+            set -e
 
-              echo "${publish_output}"
-              if [[ ${publish_status} -eq 0 ]]; then
-                break
-              fi
+            echo "${publish_output}"
+            if [[ ${publish_status} -eq 0 ]]; then
+              continue
+            fi
 
-              if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
-                echo "Skipping already-published package version for ${filename}"
-                break
-              fi
+            if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
+              echo "Skipping already-published package version for ${filename}"
+              continue
+            fi
 
-              if [[ ${attempt} -eq 3 ]]; then
-                exit "${publish_status}"
-              fi
-              delay=$((attempt * 10))
-              echo "Publishing ${filename} failed; retrying in ${delay} seconds."
-              sleep "${delay}"
-            done
+            exit "${publish_status}"
           done
-
-      - name: Retain npm debug logs
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: npm-publish-logs-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/npm-publish-logs/
-          if-no-files-found: ignore
-          retention-days: 7
 
   deploy-dev-website:
     name: Trigger developers.openai.com deploy
@@ -2098,7 +1973,6 @@ jobs:
           fi
 
   winget:
-    concurrency: *release-publication
     name: winget
     needs: release
     # Only publish stable/mainline releases to WinGet; pre-releases include a
@@ -2160,15 +2034,16 @@ jobs:
           komac cleanup --only-merged
 
   update-branch:
-    concurrency: *release-publication
     name: Update latest-alpha-cli branch
     if: >-
       ${{
         !cancelled() &&
         needs.release.result == 'success' &&
-        needs.release.outputs.npm_tag == 'alpha' &&
         needs.publish-r2.result == 'success' &&
-        needs.publish-npm.result == 'success'
+        (
+          needs.release.outputs.should_publish_npm != 'true' ||
+          needs.publish-npm.result == 'success'
+        )
       }}
     permissions:
       contents: write
@@ -2180,26 +2055,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: Determine whether to update the GitHub canary branch
-        id: github_canary
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-          PYTHONPATH: .github/scripts
-        run: |
-          set -euo pipefail
-          # Despite its name, raw+json returns raw TOML. The default response
-          # is JSON metadata with the file contents encoded as base64.
-          update="$(gh api "repos/$GITHUB_REPOSITORY/contents/codex-rs/Cargo.toml?ref=latest-alpha-cli" \
-            -H 'Accept: application/vnd.github.raw+json' \
-            | python3 .github/scripts/releases.py "$RELEASE_VERSION" --check-github canary)"
-          echo "update=$update" >> "$GITHUB_OUTPUT"
       - name: Update latest-alpha-cli branch
-        if: success() && steps.github_canary.outputs.update == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

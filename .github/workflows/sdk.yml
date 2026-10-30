@@ -5,9 +5,7 @@ on:
 
 jobs:
   python-sdk-installation:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -28,7 +26,7 @@ jobs:
             python:3.12-slim \
             sh -euxc '
               python -m venv /tmp/build
-              /tmp/build/bin/python -m pip install --only-binary=:all: --require-hashes -r tests/requirements-uv.txt
+              /tmp/build/bin/python -m pip install uv==0.11.3
               /tmp/build/bin/uv build --wheel --out-dir /tmp/dist
               python -m venv /tmp/installed
               /tmp/build/bin/uv pip install --python /tmp/installed/bin/python /tmp/dist/*.whl
@@ -36,9 +34,7 @@ jobs:
             '
 
   sdks:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment:
       name: bazel
@@ -64,7 +60,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version-file: .nvmrc
+          node-version: 22
           cache: pnpm
 
       - name: Prepare Bazel CI
@@ -136,9 +132,9 @@ jobs:
         run: pnpm -r --filter ./sdk/typescript run test
 
       - name: Install uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
-          version: "0.13.5"
+          version: "0.11.3"
 
       - name: Test Python SDK against the same CLI
         working-directory: sdk/python

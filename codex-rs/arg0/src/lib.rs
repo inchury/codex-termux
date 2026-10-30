@@ -20,7 +20,14 @@ use tempfile::TempDir;
 
 const APPLY_PATCH_ARG0: &str = "apply_patch";
 const MISSPELLED_APPLY_PATCH_ARG0: &str = "applypatch";
+const CODEX_SELF_EXE_ENV: &str = "CODEX_SELF_EXE";
 const LOCK_FILENAME: &str = ".lock";
+
+fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::Unsupported
+}
+
+
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Arg0DispatchPaths {
@@ -248,6 +255,13 @@ where
     result
 }
 
+fn resolve_codex_self_exe() -> Option<PathBuf> {
+    std::env::var_os(CODEX_SELF_EXE_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+}
+
 fn linux_sandbox_exe_path(
     path_entry_guard: Option<&Arg0PathEntryGuard>,
     current_exe: Option<PathBuf>,
@@ -375,7 +389,12 @@ fn prepare_aliases_in_home(
         .create(true)
         .truncate(false)
         .open(&lock_path)?;
-    lock_file.try_lock()?;
+    if let Err(err) = lock_file.try_lock() {
+    let io_err: std::io::Error = err.into();
+    if !is_unsupported_file_lock_error(&io_err) {
+        return Err(io_err);
+    }
+}
 
     for filename in &[
         APPLY_PATCH_ARG0,
@@ -383,7 +402,7 @@ fn prepare_aliases_in_home(
         #[cfg(target_os = "linux")]
         CODEX_LINUX_SANDBOX_ARG0,
     ] {
-        let exe = std::env::current_exe()?;
+        let exe = resolve_codex_self_exe().ok_or(std::io::ErrorKind::NotFound)?;
 
         #[cfg(unix)]
         {
@@ -524,6 +543,7 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
     match lock_file.try_lock() {
         Ok(()) => Ok(Some(lock_file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(io_err)) if is_unsupported_file_lock_error(&io_err) => Ok(Some(lock_file)),
         Err(err) => Err(err.into()),
     }
 }
