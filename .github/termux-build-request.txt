@@ -1,2 +1,1 @@
-Request: retry Android CLI build with unlocked Cargo fetch and corrected mxc-sdk shim path.
-V8 152.2.0 prebuilt should be reused.
+Request: validate rust-v0.166.0 writer_lock.rs bounded retry rebase and build Termux release.
