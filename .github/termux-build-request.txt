@@ -1,1 +1,1 @@
-Request: retry Codex rust-v0.169.0 with rebased installation ID shared/exclusive locking and writer coordination compatibility patches.
+Request: retry Codex 0.169.0 after correcting writer-lock patch trailing context and coordination fallback return types.
