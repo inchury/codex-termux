@@ -141,7 +141,11 @@ pub async fn bind_private_daemon_socket(
         socket_guard.rendezvous_path.as_path(),
     )?;
     #[cfg(unix)]
-    socket_guard._startup_lock._file.unlock()?;
+    if let Err(err) = socket_guard._startup_lock._file.unlock()
+        && !is_unsupported_file_lock_error(&err)
+    {
+        return Err(err);
+    }
     Ok((listener, socket_guard))
 }
 
@@ -388,7 +392,11 @@ pub async fn acquire_app_server_startup_lock(
             .read(true)
             .write(true)
             .open(startup_lock_path.as_path())?;
-        file.lock()?;
+        if let Err(err) = file.lock()
+            && !is_unsupported_file_lock_error(&err)
+        {
+            return Err(err);
+        }
         Ok(AppServerStartupLock {
             _file: file,
             #[cfg(unix)]
@@ -435,6 +443,7 @@ impl AppServerStartupLock {
         match self._file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => return Ok(()),
+            Err(std::fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => return Ok(()),
             Err(std::fs::TryLockError::Error(err)) => return Err(err),
         }
         startup_lock_file_matches_path(&self._file, path.as_path())?
@@ -454,7 +463,14 @@ pub(super) fn try_acquire_removable_app_server_startup_lock(
         .read(true)
         .write(true)
         .open(startup_lock_path.as_path())?;
-    file.try_lock()?;
+    if let Err(err) = file.try_lock()
+        && !matches!(err, std::fs::TryLockError::Error(ref e) if is_unsupported_file_lock_error(e))
+    {
+        return Err(match err {
+            std::fs::TryLockError::WouldBlock => ErrorKind::WouldBlock.into(),
+            std::fs::TryLockError::Error(err) => err,
+        });
+    }
     if !startup_lock_file_matches_path(&file, startup_lock_path.as_path())? {
         return Err(ErrorKind::WouldBlock.into());
     }
@@ -490,6 +506,20 @@ fn startup_lock_file_matches_path(file: &std::fs::File, path: &Path) -> IoResult
             && locked_metadata.ino() == path_metadata.ino()),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
+    }
+}
+
+fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::Unsupported
+}
+
+#[cfg(test)]
+mod unsupported_lock_helper_tests {
+    use super::is_unsupported_file_lock_error;
+    use std::io::ErrorKind;
+    #[test]
+    fn unsupported_kind_is_classified_as_unsupported_lock_error() {
+        assert!(is_unsupported_file_lock_error(&ErrorKind::Unsupported.into()));
     }
 }
 

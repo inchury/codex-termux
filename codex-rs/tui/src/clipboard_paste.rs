@@ -6,6 +6,7 @@ pub(crate) mod text;
 
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(not(target_os = "android"))]
 use tempfile::Builder;
 
 #[derive(Debug, Clone)]

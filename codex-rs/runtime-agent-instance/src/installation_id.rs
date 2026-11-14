@@ -1,4 +1,5 @@
 use std::fs::OpenOptions;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Result;
 use std::io::Seek;
@@ -16,6 +17,10 @@ use uuid::Uuid;
 
 const INSTALLATION_ID_FILENAME: &str = "installation_id";
 
+fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::Unsupported
+}
+
 pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<String> {
     let path = codex_home.join(INSTALLATION_ID_FILENAME);
     fs::create_dir_all(codex_home).await?;
@@ -29,14 +34,20 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
         }
 
         let mut file = options.open(&path)?;
-        file.lock_shared()?;
+        let shared_locked = match file.lock_shared() {
+            Ok(()) => true,
+            Err(err) if is_unsupported_file_lock_error(&err) => false,
+            Err(err) => return Err(err),
+        };
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
         if Uuid::parse_str(contents.trim()).is_err() {
             // Another process can initialize the ID while we switch locks. Read it again
             // under the exclusive lock before deciding whether to create a new one.
-            file.unlock()?;
-            file.lock()?;
+            if shared_locked {
+                file.unlock()?;
+                file.lock()?;
+            }
             file.seek(SeekFrom::Start(0))?;
             contents.clear();
             file.read_to_string(&mut contents)?;
@@ -75,6 +86,7 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::INSTALLATION_ID_FILENAME;
+    use super::is_unsupported_file_lock_error;
     use super::resolve_installation_id;
     use codex_utils_absolute_path::AbsolutePathBuf;
     use pretty_assertions::assert_eq;
@@ -83,6 +95,12 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn unsupported_file_lock_classifier() {
+        assert!(is_unsupported_file_lock_error(&std::io::ErrorKind::Unsupported.into()));
+        assert!(!is_unsupported_file_lock_error(&std::io::ErrorKind::PermissionDenied.into()));
+    }
 
     #[tokio::test]
     async fn resolve_installation_id_generates_and_persists_uuid() {
