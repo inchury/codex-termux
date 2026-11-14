@@ -1,1 +1,1 @@
-Request: validate rust-v0.166.0 writer_lock.rs bounded retry rebase and build Termux release.
+Request: retry Codex rust-v0.169.0 with rebased installation ID shared/exclusive locking and writer coordination compatibility patches.
