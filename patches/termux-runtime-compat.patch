@@ -534,17 +534,15 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
  /// Coordinates writer ownership within one Codex home.
  pub struct WriterLockCoordinator {
      directory: PathBuf,
-@@ -50,6 +66,9 @@
+@@ -50,6 +66,7 @@
              && match file.try_lock() {
                  Ok(()) => true,
                  Err(fs::TryLockError::WouldBlock) => false,
-+                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
-+                    return Ok(());
-+                }
++                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => false,
                  Err(fs::TryLockError::Error(err)) => return Err(err),
              };
          if have_exclusive {
-@@ -83,6 +102,10 @@
+@@ -83,6 +100,10 @@
                      format!("thread {thread_id} already has an active writer"),
                  ));
              }
@@ -555,7 +553,7 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
              Err(std::fs::TryLockError::Error(err)) => {
                  return Err(io::Error::other(format!(
                      "failed to acquire thread writer lock {}: {err}",
-@@ -111,6 +134,15 @@
+@@ -111,6 +132,15 @@
              Ok(file) => match file.try_lock() {
                  Ok(()) => Ok(Some(coordination_lock)),
                  Err(std::fs::TryLockError::WouldBlock) => Ok(None),
@@ -571,7 +569,18 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
                  Err(std::fs::TryLockError::Error(err)) => Err(err),
              },
              Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(coordination_lock)),
-@@ -193,6 +225,10 @@
+@@ -150,7 +180,10 @@
+                         "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
+                     ));
+                 }
++                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                    return Ok(());
++                }
+                 Err(fs::TryLockError::Error(err)) => return Err(err),
+             }
+         }
+     }
+@@ -193,6 +226,10 @@
                      }
                  }
                  Err(std::fs::TryLockError::WouldBlock) => {}
@@ -582,7 +591,7 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
                  Err(std::fs::TryLockError::Error(err)) => {
                      warn!(
                          "failed to inspect thread writer lock {}: {err}",
-@@ -239,3 +275,34 @@
+@@ -239,6 +276,37 @@
      }
  }
  
@@ -617,6 +626,9 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
 +    }
 +}
 +
+ #[cfg(test)]
+ #[path = "writer_lock_tests.rs"]
+ mod tests;
 diff --git a/codex-rs/tui/src/clipboard_paste.rs b/codex-rs/tui/src/clipboard_paste.rs
 --- a/codex-rs/tui/src/clipboard_paste.rs
 +++ b/codex-rs/tui/src/clipboard_paste.rs
