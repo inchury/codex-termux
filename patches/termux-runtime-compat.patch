@@ -1,67 +1,67 @@
-diff --git a/codex-rs/core/src/installation_id.rs b/codex-rs/core/src/installation_id.rs
---- a/codex-rs/core/src/installation_id.rs
-+++ b/codex-rs/core/src/installation_id.rs
+diff --git a/codex-rs/runtime-agent-instance/src/installation_id.rs b/codex-rs/runtime-agent-instance/src/installation_id.rs
+--- a/codex-rs/runtime-agent-instance/src/installation_id.rs
++++ b/codex-rs/runtime-agent-instance/src/installation_id.rs
 @@ -1,4 +1,5 @@
  use std::fs::OpenOptions;
 +use std::io::ErrorKind;
  use std::io::Read;
  use std::io::Result;
  use std::io::Seek;
-@@ -16,6 +17,16 @@ use uuid::Uuid;
+@@ -16,6 +17,10 @@
  
- pub(crate) const INSTALLATION_ID_FILENAME: &str = "installation_id";
+ const INSTALLATION_ID_FILENAME: &str = "installation_id";
  
 +fn is_unsupported_file_lock_error(err: &std::io::Error) -> bool {
-+    // Filesystems that do not support advisory file locking (observed on
-+    // Termux storage backends under `/data/data/com.termux/files`) surface
-+    // `ErrorKind::Unsupported` from `File::lock`. Detect this on every
-+    // target rather than gating on `cfg!(target_os = "android")`: support
-+    // for the affected filesystem behavior is a runtime property, and this
-+    // also covers older Termux package lines.
 +    err.kind() == ErrorKind::Unsupported
 +}
 +
  pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<String> {
      let path = codex_home.join(INSTALLATION_ID_FILENAME);
      fs::create_dir_all(codex_home).await?;
-@@ -29,7 +40,11 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
+@@ -29,14 +34,20 @@
          }
  
          let mut file = options.open(&path)?;
--        file.lock()?;
-+        if let Err(err) = file.lock()
-+            && !is_unsupported_file_lock_error(&err)
-+        {
-+            return Err(err);
-+        }
- 
-         #[cfg(unix)]
-         {
-@@ -66,6 +81,7 @@ pub async fn resolve_installation_id(codex_home: &AbsolutePathBuf) -> Result<Str
+-        file.lock_shared()?;
++        let shared_locked = match file.lock_shared() {
++            Ok(()) => true,
++            Err(err) if is_unsupported_file_lock_error(&err) => false,
++            Err(err) => return Err(err),
++        };
+         let mut contents = String::new();
+         file.read_to_string(&mut contents)?;
+         if Uuid::parse_str(contents.trim()).is_err() {
+             // Another process can initialize the ID while we switch locks. Read it again
+             // under the exclusive lock before deciding whether to create a new one.
+-            file.unlock()?;
+-            file.lock()?;
++            if shared_locked {
++                file.unlock()?;
++                file.lock()?;
++            }
+             file.seek(SeekFrom::Start(0))?;
+             contents.clear();
+             file.read_to_string(&mut contents)?;
+@@ -75,6 +86,7 @@
  #[cfg(test)]
  mod tests {
      use super::INSTALLATION_ID_FILENAME;
 +    use super::is_unsupported_file_lock_error;
      use super::resolve_installation_id;
-     use core_test_support::PathExt;
+     use codex_utils_absolute_path::AbsolutePathBuf;
      use pretty_assertions::assert_eq;
-@@ -146,4 +162,16 @@ mod tests {
-             resolved
-         );
-     }
-+
+@@ -84,5 +96,11 @@
+     #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
 +    #[test]
-+    fn unsupported_file_lock_classifier_accepts_unsupported_kind() {
-+        let unsupported = std::io::Error::from(std::io::ErrorKind::Unsupported);
-+        assert!(is_unsupported_file_lock_error(&unsupported));
++    fn unsupported_file_lock_classifier() {
++        assert!(is_unsupported_file_lock_error(&std::io::ErrorKind::Unsupported.into()));
++        assert!(!is_unsupported_file_lock_error(&std::io::ErrorKind::PermissionDenied.into()));
 +    }
 +
-+    #[test]
-+    fn unsupported_file_lock_classifier_rejects_other_kinds() {
-+        let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-+        assert!(!is_unsupported_file_lock_error(&other));
-+    }
- }
+     #[tokio::test]
+     async fn resolve_installation_id_generates_and_persists_uuid() {
 diff --git a/codex-rs/execpolicy/src/amend.rs b/codex-rs/execpolicy/src/amend.rs
 --- a/codex-rs/execpolicy/src/amend.rs
 +++ b/codex-rs/execpolicy/src/amend.rs
@@ -511,7 +511,7 @@ diff --git a/codex-rs/rmcp-client/src/utils.rs b/codex-rs/rmcp-client/src/utils.
 diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_lock.rs
 --- a/codex-rs/rollout/src/writer_lock.rs
 +++ b/codex-rs/rollout/src/writer_lock.rs
-@@ -17,6 +17,22 @@ use tracing::warn;
+@@ -20,6 +20,22 @@
  const WRITER_LOCK_DIR: &str = "thread-writer-locks";
  const COORDINATION_LOCK_FILE: &str = ".coordination.lock";
  
@@ -534,7 +534,17 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
  /// Coordinates writer ownership within one Codex home.
  pub struct WriterLockCoordinator {
      directory: PathBuf,
-@@ -70,6 +86,10 @@ impl WriterLockCoordinator {
+@@ -50,6 +66,9 @@
+             && match file.try_lock() {
+                 Ok(()) => true,
+                 Err(fs::TryLockError::WouldBlock) => false,
++                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
++                    return Ok(());
++                }
+                 Err(fs::TryLockError::Error(err)) => return Err(err),
+             };
+         if have_exclusive {
+@@ -83,6 +102,10 @@
                      format!("thread {thread_id} already has an active writer"),
                  ));
              }
@@ -545,7 +555,7 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
              Err(std::fs::TryLockError::Error(err)) => {
                  return Err(io::Error::other(format!(
                      "failed to acquire thread writer lock {}: {err}",
-@@ -98,6 +118,15 @@ impl WriterLockCoordinator {
+@@ -111,6 +134,15 @@
              Ok(file) => match file.try_lock() {
                  Ok(()) => Ok(Some(coordination_lock)),
                  Err(std::fs::TryLockError::WouldBlock) => Ok(None),
@@ -561,21 +571,7 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
                  Err(std::fs::TryLockError::Error(err)) => Err(err),
              },
              Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(coordination_lock)),
-@@ -128,7 +157,12 @@
-                         "timed out waiting for the thread writer coordination lock; another Codex process may be suspended on this or another host",
-                     ));
-                 }
--                Err(fs::TryLockError::Error(err)) => return Err(err),
-+                Err(fs::TryLockError::Error(err)) if is_unsupported_file_lock_error(&err) => {
-+                    // Android's Rust stdlib can report unsupported advisory locking.
-+                    // Preserve the existing bounded wait on supported hosts.
-+                    break;
-+                }
-+                Err(fs::TryLockError::Error(err)) => return Err(err),
-             }
-         }
-         Ok(file)
-@@ -159,6 +190,10 @@ impl WriterLockCoordinator {
+@@ -193,6 +225,10 @@
                      }
                  }
                  Err(std::fs::TryLockError::WouldBlock) => {}
@@ -586,7 +582,7 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
                  Err(std::fs::TryLockError::Error(err)) => {
                      warn!(
                          "failed to inspect thread writer lock {}: {err}",
-@@ -195,6 +230,37 @@ impl Drop for WriterLockGuard {
+@@ -239,3 +275,34 @@
      }
  }
  
@@ -621,9 +617,6 @@ diff --git a/codex-rs/rollout/src/writer_lock.rs b/codex-rs/rollout/src/writer_l
 +    }
 +}
 +
- #[cfg(test)]
- #[path = "writer_lock_tests.rs"]
- mod tests;
 diff --git a/codex-rs/tui/src/clipboard_paste.rs b/codex-rs/tui/src/clipboard_paste.rs
 --- a/codex-rs/tui/src/clipboard_paste.rs
 +++ b/codex-rs/tui/src/clipboard_paste.rs
