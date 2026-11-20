@@ -62,7 +62,16 @@ impl CommittedStorage {
                         "credential commit lock timed out",
                     ));
                 }
-                Err(error) => return Err(error.into()),
+                #[cfg(target_os = "android")]
+      Err(std::fs::TryLockError::Error(ref error))
+          if error.kind() == std::io::ErrorKind::Unsupported
+              || error.raw_os_error() == Some(38)
+              || error.raw_os_error() == Some(95) =>
+      {
+          // Retain the opened sidecar; Android does not support its lock.
+          return Ok(file);
+      }
+      Err(error) => return Err(error.into()),
             }
         }
     }
