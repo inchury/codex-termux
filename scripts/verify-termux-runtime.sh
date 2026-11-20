@@ -34,7 +34,10 @@ require_pattern codex-rs/arg0/src/lib.rs CODEX_SELF_EXE
 require_pattern codex-rs/arg0/src/lib.rs is_unsupported_file_lock_error
 require_pattern codex-rs/app-server-transport/src/transport/unix_socket.rs is_unsupported_file_lock_error
 require_pattern codex-rs/core/Cargo.toml aarch64-linux-android
-reject_pattern codex-rs/tui/src/updates.rs api.github.com/repos/inchury/codex-termux/releases/latest
-reject_pattern codex-rs/cli/src/doctor/updates.rs registry.npmjs.org/@inchury
+# The Termux fork intentionally uses its own GitHub Release and npm channels
+# for update notifications. These are product-specific endpoints, not runtime
+# compatibility patches, so they must not fail the Android runtime contract.
+require_pattern codex-rs/tui/src/updates.rs api.github.com/repos/inchury/codex-termux/releases/latest
+require_pattern codex-rs/cli/src/doctor/updates.rs registry.npmjs.org/@inchury
 
 echo "Runtime compatibility contract passed"
