@@ -1,2 +1,2 @@
-release_suffix=3
-Request: retry Codex 0.171.0 Termux .3 after removing malformed workflow tail; Android auth.lock compatibility fix.
+release_suffix=4
+Request: build Codex 0.171.0 Termux .4 fixing CommittedStorage::lock try_lock unsupported during OAuth credential persistence.
