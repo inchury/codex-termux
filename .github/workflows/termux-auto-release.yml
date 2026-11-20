@@ -189,8 +189,8 @@ jobs:
           replacement = """            if let Err(err) = file.lock() {
                 #[cfg(target_os = "android")]
                 if err.kind() == std::io::ErrorKind::Unsupported
-                    || err.raw_os_error() == Some(libc::ENOSYS)
-                    || err.raw_os_error() == Some(libc::EOPNOTSUPP)
+                    || err.raw_os_error() == Some(38) // ENOSYS on Android
+                    || err.raw_os_error() == Some(95) // EOPNOTSUPP on Android
                 {
                     return Ok((guard, None));
                 }
