@@ -107,7 +107,7 @@ jobs:
           # overwriting the already published immutable .1 tag.
           release_suffix=1
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            requested_suffix="$(grep -E '^release_suffix=[0-9]+
+            requested_suffix="$(awk -F= '$1 == "release_suffix" && $2 ~ /^[0-9]+$/ { print $2 }' .github/termux-build-request.txt | tail -n 1)"
             if [ -n "${requested_suffix}" ]; then
               release_suffix="${requested_suffix}"
             fi
