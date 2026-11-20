@@ -112,7 +112,7 @@ jobs:
           fi
           release_tag="v${version}-termux.${release_suffix}"
           candidate_branch="auto/termux-v${version}-termux.${release_suffix}"
-          echo "RELEASE_SUFFIX=${release_suffix}" >> "${GITHUB_ENV}"
+          export RELEASE_SUFFIX="${release_suffix}"
 
           echo "upstream_tag=${upstream_tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
