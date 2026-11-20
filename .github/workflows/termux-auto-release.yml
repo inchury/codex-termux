@@ -106,9 +106,11 @@ jobs:
           # An explicit push request can publish a patch release without
           # overwriting the already published immutable .1 tag.
           release_suffix=1
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] \
-            && grep -Fxq 'release_suffix=2' .github/termux-build-request.txt; then
-            release_suffix=2
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            requested_suffix="$(sed -n 's/^release_suffix=\\([0-9][0-9]*\\)$/\\1/p' .github/termux-build-request.txt | tail -n 1)"
+            if [ -n "${requested_suffix}" ]; then
+              release_suffix="${requested_suffix}"
+            fi
           fi
           release_tag="v${version}-termux.${release_suffix}"
           candidate_branch="auto/termux-v${version}-termux.${release_suffix}"
@@ -176,6 +178,30 @@ jobs:
           p.write_text(s.replace(anchor, replacement, 1))
           PY
           grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)' codex-rs/login/src/auth/storage.rs
+
+          # Termux may reject OS-level file locks. Keep the in-process mutex
+          # and skip the cross-process auth.lock only for unsupported Android locks.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("codex-rs/login/src/auth/storage.rs")
+          s = p.read_text()
+          anchor = "            file.lock()?;\n            Some(file)"
+          replacement = """            if let Err(err) = file.lock() {
+                #[cfg(target_os = "android")]
+                if err.kind() == std::io::ErrorKind::Unsupported
+                    || err.raw_os_error() == Some(libc::ENOSYS)
+                    || err.raw_os_error() == Some(libc::EOPNOTSUPP)
+                {
+                    return Ok((guard, None));
+                }
+                return Err(err);
+            }
+            Some(file)"""
+          if s.count(anchor) != 1:
+              raise SystemExit("Android auth.lock anchor mismatch")
+          p.write_text(s.replace(anchor, replacement, 1))
+          PY
+          grep -Fq 'return Ok((guard, None));' codex-rs/login/src/auth/storage.rs
 
           # Apply the two Android-specific compatibility adjustments directly
           # against the current upstream layout, rather than replaying stale
@@ -431,6 +457,8 @@ jobs:
           bash scripts/verify-termux-runtime.sh
           grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)' codex-rs/login/src/auth/storage.rs
 
+          grep -Fq 'return Ok((guard, None));' codex-rs/login/src/auth/storage.rs
+
           # Stage only the Rust runtime changes made by the pinned Android patch
           # and the small explicit compatibility adaptations.
           git add -u -- codex-rs
@@ -449,6 +477,7 @@ jobs:
           git show HEAD:codex-rs/app-server-transport/src/transport/unix_socket.rs | grep -q 'is_unsupported_file_lock_error'
           bash scripts/verify-termux-runtime.sh
           git show HEAD:codex-rs/login/src/auth/storage.rs | grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)'
+          git show HEAD:codex-rs/login/src/auth/storage.rs | grep -Fq 'return Ok((guard, None));'
 
           # Push only a disposable candidate branch. main stays an automation/
           # maintenance branch; the successful release tag is the immutable
