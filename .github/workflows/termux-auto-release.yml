@@ -152,15 +152,17 @@ jobs:
           from pathlib import Path
           p = Path("codex-rs/login/src/auth/storage.rs")
           s = p.read_text()
-          anchor = """    let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
-              create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
-          }""".replace("              create_", "    create_").replace("\n          }", "\n}")
-          replacement = """    #[cfg(target_os = "android")]
-              if matches!(mode, AuthCredentialsStoreMode::Auto) {
-                  return Arc::new(FileAuthStorage::new(codex_home));
-              }
-
-          """.replace("              if ", "    if ").replace("                  return ", "        return ").replace("              }", "    }") + anchor
+          anchor = (
+              "    let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);\n"
+              "    create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)\n"
+              "}"
+          )
+          replacement = (
+              "    #[cfg(target_os = \"android\")]\n"
+              "    if matches!(mode, AuthCredentialsStoreMode::Auto) {\n"
+              "        return Arc::new(FileAuthStorage::new(codex_home));\n"
+              "    }\n\n"
+          ) + anchor
           if s.count(anchor) != 1:
               raise SystemExit("Android auth storage anchor mismatch")
           p.write_text(s.replace(anchor, replacement, 1))
