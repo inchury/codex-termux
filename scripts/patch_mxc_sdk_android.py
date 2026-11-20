@@ -11,6 +11,11 @@ import sys
 
 home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
 matches = list((home / "git" / "checkouts").glob("mxc-*/b211201/src/mxc-sdk/src/core/mxc_engine/dispatch.rs"))
+if not matches:
+    # The upstream MXC dependency has moved beyond the b211201 checkout.
+    # Do not patch an unrelated revision using stale source assumptions.
+    print("Legacy mxc-sdk b211201 checkout absent; skipping obsolete Android patch")
+    sys.exit(0)
 if len(matches) != 1:
     sys.exit(f"Expected one pinned mxc-sdk checkout, found {len(matches)}: {matches}")
 path = matches[0]
