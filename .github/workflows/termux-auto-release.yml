@@ -11,7 +11,7 @@ on:
 
 concurrency:
   group: termux-auto-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -145,6 +145,27 @@ jobs:
             exit 1
           fi
           git apply "${RUNNER_TEMP}/termux-runtime.patch"
+
+          # Port the Android auth storage fix from main onto clean upstream.
+          # Auto mode must persist auth.json rather than use an unsupported keyring.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("codex-rs/login/src/auth/storage.rs")
+          s = p.read_text()
+          anchor = """    let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
+              create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
+          }""".replace("              create_", "    create_").replace("\n          }", "\n}")
+          replacement = """    #[cfg(target_os = "android")]
+              if matches!(mode, AuthCredentialsStoreMode::Auto) {
+                  return Arc::new(FileAuthStorage::new(codex_home));
+              }
+
+          """.replace("              if ", "    if ").replace("                  return ", "        return ").replace("              }", "    }") + anchor
+          if s.count(anchor) != 1:
+              raise SystemExit("Android auth storage anchor mismatch")
+          p.write_text(s.replace(anchor, replacement, 1))
+          PY
+          grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)' codex-rs/login/src/auth/storage.rs
 
           # Apply the two Android-specific compatibility adjustments directly
           # against the current upstream layout, rather than replaying stale
@@ -398,6 +419,7 @@ jobs:
           # Validate the compatibility contract before spending runner time on
           # the Android build. Cargo-backed checks remain enabled here.
           bash scripts/verify-termux-runtime.sh
+          grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)' codex-rs/login/src/auth/storage.rs
 
           # Stage only the Rust runtime changes made by the pinned Android patch
           # and the small explicit compatibility adaptations.
@@ -416,6 +438,7 @@ jobs:
           git show HEAD:codex-rs/cli/src/remote_control_cmd.rs | grep -q 'tempdir_in(std::env::temp_dir())'
           git show HEAD:codex-rs/app-server-transport/src/transport/unix_socket.rs | grep -q 'is_unsupported_file_lock_error'
           bash scripts/verify-termux-runtime.sh
+          git show HEAD:codex-rs/login/src/auth/storage.rs | grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)'
 
           # Push only a disposable candidate branch. main stays an automation/
           # maintenance branch; the successful release tag is the immutable
