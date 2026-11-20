@@ -1,1 +1,1 @@
-Request: retry Codex rust-v0.171.0 Termux release after removing obsolete fork update URL verification assertions.
+Request: rebuild Codex rust-v0.171.0 with Android Auto auth storage forced to FileAuthStorage and committed-candidate verification.
