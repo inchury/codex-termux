@@ -1,2 +1,2 @@
 release_suffix=3
-Request: publish Codex rust-v0.171.0 Termux .3 fixing unsupported auth.lock file locking on Android; verify committed auth storage changes.
+Request: retry immutable v0.171.0-termux.3 build after fixing release suffix parsing. Verify Android auth.lock fallback.
