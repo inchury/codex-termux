@@ -204,8 +204,17 @@ pub(super) trait AuthStorageBackend: Debug + Send + Sync {
                 .create(true)
                 .truncate(false)
                 .open(home.join("auth.lock"))?;
-            file.lock()?;
-            Some(file)
+            if let Err(err) = file.lock() {
+      #[cfg(target_os = "android")]
+      if err.kind() == std::io::ErrorKind::Unsupported
+          || err.raw_os_error() == Some(38) // ENOSYS on Android
+          || err.raw_os_error() == Some(95) // EOPNOTSUPP on Android
+      {
+          return Ok((guard, None));
+      }
+      return Err(err);
+  }
+  Some(file)
         } else {
             None
         };
@@ -702,6 +711,11 @@ pub(super) fn create_auth_storage(
     mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
+    #[cfg(target_os = "android")]
+    if matches!(mode, AuthCredentialsStoreMode::Auto) {
+        return Arc::new(FileAuthStorage::new(codex_home));
+    }
+
     let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
