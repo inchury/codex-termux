@@ -1,1 +1,2 @@
-Request: rebuild Codex rust-v0.171.0 with Android Auto auth storage forced to FileAuthStorage and committed-candidate verification.
+release_suffix=2
+Request: rebuild Codex rust-v0.171.0 Termux patch release with Android Auto auth persistence fix; verify committed storage.rs before publishing.
