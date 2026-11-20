@@ -1,2 +1,2 @@
 release_suffix=3
-Request: retry immutable v0.171.0-termux.3 build after fixing release suffix parsing. Verify Android auth.lock fallback.
+Request: publish Codex 0.171.0 Termux .3 with verified auth.lock unsupported fallback; retry after YAML parser correction.
