@@ -1,2 +1,2 @@
-release_suffix=2
-Request: rebuild Codex rust-v0.171.0 Termux patch release with Android Auto auth persistence fix; verify committed storage.rs before publishing.
+release_suffix=3
+Request: publish Codex rust-v0.171.0 Termux .3 fixing unsupported auth.lock file locking on Android; verify committed auth storage changes.
