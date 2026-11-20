@@ -1,2 +1,2 @@
 release_suffix=3
-Request: publish Codex 0.171.0 Termux .3 with verified auth.lock unsupported fallback; retry after YAML parser correction.
+Request: retry Codex 0.171.0 Termux .3 after removing malformed workflow tail; Android auth.lock compatibility fix.
