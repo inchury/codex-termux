@@ -504,6 +504,15 @@ pub(super) fn create_auth_storage(
     mode: AuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
 ) -> Arc<dyn AuthStorageBackend> {
+    // Android/Termux does not provide a reliable desktop keyring backend.
+    // The default Auto mode can fail with "lock() not supported" after OAuth
+    // succeeds. Prefer the existing permission-restricted auth.json backend.
+    // Explicit File, Keyring and Ephemeral choices remain unchanged.
+    #[cfg(target_os = "android")]
+    if matches!(mode, AuthCredentialsStoreMode::Auto) {
+        return Arc::new(FileAuthStorage::new(codex_home));
+    }
+
     let keyring_store: Arc<dyn KeyringStore> = Arc::new(DefaultKeyringStore);
     create_auth_storage_with_store(codex_home, mode, keyring_store, keyring_backend_kind)
 }
