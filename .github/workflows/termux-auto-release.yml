@@ -203,6 +203,29 @@ jobs:
           PY
           grep -Fq 'return Ok((guard, None));' codex-rs/login/src/auth/storage.rs
 
+          # The outer CommittedStorage wrapper uses try_lock() independently
+          # of auth.lock. Android/Termux can reject this OS-level operation.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("codex-rs/login/src/auth/storage_commit.rs")
+          s = p.read_text()
+          anchor = "                Err(error) => return Err(error.into()),"
+          replacement = """                #[cfg(target_os = "android")]
+                Err(std::fs::TryLockError::Error(ref error))
+                    if error.kind() == std::io::ErrorKind::Unsupported
+                        || error.raw_os_error() == Some(38)
+                        || error.raw_os_error() == Some(95) =>
+                {
+                    // Retain the opened sidecar; Android does not support its lock.
+                    return Ok(file);
+                }
+                Err(error) => return Err(error.into()),"""
+          if s.count(anchor) != 1:
+              raise SystemExit("CommittedStorage try_lock anchor mismatch")
+          p.write_text(s.replace(anchor, replacement, 1))
+          PY
+          grep -Fq 'Android does not support its lock' codex-rs/login/src/auth/storage_commit.rs
+
           # Apply the two Android-specific compatibility adjustments directly
           # against the current upstream layout, rather than replaying stale
           # whole-file patches across upstream Rust releases.
@@ -459,6 +482,8 @@ jobs:
 
           grep -Fq 'return Ok((guard, None));' codex-rs/login/src/auth/storage.rs
 
+          grep -Fq 'Android does not support its lock' codex-rs/login/src/auth/storage_commit.rs
+
           # Stage only the Rust runtime changes made by the pinned Android patch
           # and the small explicit compatibility adaptations.
           git add -u -- codex-rs
@@ -478,6 +503,7 @@ jobs:
           bash scripts/verify-termux-runtime.sh
           git show HEAD:codex-rs/login/src/auth/storage.rs | grep -Fq 'if matches!(mode, AuthCredentialsStoreMode::Auto)'
           git show HEAD:codex-rs/login/src/auth/storage.rs | grep -Fq 'return Ok((guard, None));'
+          git show HEAD:codex-rs/login/src/auth/storage_commit.rs | grep -Fq 'Android does not support its lock'
 
           # Push only a disposable candidate branch. main stays an automation/
           # maintenance branch; the successful release tag is the immutable
