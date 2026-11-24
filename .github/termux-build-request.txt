@@ -1,2 +1,2 @@
-release_suffix=4
-Request: build Codex 0.171.0 Termux .4 fixing CommittedStorage::lock try_lock unsupported during OAuth credential persistence.
+release_suffix=1
+Request: retry upstream 0.172.0 Android release with MXC c662018 logging compatibility patch.
